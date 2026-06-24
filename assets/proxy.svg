@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 148" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="148" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee" stop-opacity="0.05"/>
+      <stop offset="0.45" stop-color="#09091a" stop-opacity="0"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0.07"/>
+    </linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="0.5" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="socksFill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#22d3ee" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0.1"/>
+    </linearGradient>
+    <radialGradient id="socksGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="socksGlowFilter" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="960" height="148" rx="18" fill="#09091a" stroke="#27272a"/>
+  <rect width="960" height="148" rx="18" fill="url(#bg)"/>
+  <circle cx="120" cy="118" r="70" fill="#22d3ee" opacity="0.06"/>
+  <circle cx="820" cy="36" r="56" fill="#a78bfa" opacity="0.08"/>
+
+  <text x="480" y="30" text-anchor="middle" fill="#71717a" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600" letter-spacing="0.14em">SOCKS5 PROXY</text>
+  <line x1="380" y1="36" x2="580" y2="36" stroke="#27272a" stroke-width="1"/>
+
+  <!-- App -->
+  <g transform="translate(72 52)">
+    <circle cx="36" cy="36" r="36" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+    <rect x="22" y="24" width="28" height="20" rx="3" fill="none" stroke="#71717a" stroke-width="1.5"/>
+    <path d="M30 44 H42" stroke="#52525b" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="36" cy="58" r="2" fill="#52525b"/>
+    <text x="36" y="88" text-anchor="middle" fill="#71717a" font-family="Inter,sans-serif" font-size="11">app</text>
+  </g>
+
+  <path d="M152 88 H196" stroke="url(#arrow)" stroke-width="2.5" stroke-linecap="round" filter="url(#softGlow)"/>
+  <polygon points="196,88 186,83 186,93" fill="#67e8f9"/>
+
+  <!-- SOCKS5 entry (hero node) -->
+  <g transform="translate(208 46)" filter="url(#socksGlowFilter)">
+    <circle cx="42" cy="42" r="46" fill="url(#socksGlow)"/>
+    <circle cx="42" cy="42" r="40" fill="url(#socksFill)" stroke="url(#g)" stroke-width="2"/>
+    <text x="42" y="40" text-anchor="middle" fill="#a5f3fc" font-family="JetBrains Mono,monospace" font-size="13" font-weight="700">SOCKS5</text>
+    <text x="42" y="56" text-anchor="middle" fill="#71717a" font-family="Inter,sans-serif" font-size="10">entry</text>
+  </g>
+
+  <path d="M296 88 H336" stroke="url(#arrow)" stroke-width="2.5" stroke-linecap="round" filter="url(#softGlow)"/>
+  <polygon points="336,88 326,83 326,93" fill="#c4b5fd"/>
+
+  <!-- Chain hops (same visual language as chain.svg) -->
+  <g transform="translate(348 58)">
+    <circle cx="28" cy="28" r="26" fill="#22d3ee" fill-opacity="0.12" stroke="#22d3ee" stroke-opacity="0.5"/>
+    <text x="28" y="33" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">AWG</text>
+  </g>
+  <path d="M410 86 H438" stroke="url(#arrow)" stroke-width="2" stroke-linecap="round"/>
+  <polygon points="438,86 430,82 430,90" fill="#52525b"/>
+  <g transform="translate(448 58)">
+    <circle cx="28" cy="28" r="26" fill="#a78bfa" fill-opacity="0.12" stroke="#a78bfa" stroke-opacity="0.5"/>
+    <text x="28" y="33" text-anchor="middle" fill="#c4b5fd" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">Tor</text>
+  </g>
+  <path d="M510 86 H538" stroke="url(#arrow)" stroke-width="2" stroke-linecap="round"/>
+  <polygon points="538,86 530,82 530,90" fill="#52525b"/>
+  <g transform="translate(548 58)">
+    <circle cx="28" cy="28" r="26" fill="#2dd4bf" fill-opacity="0.12" stroke="#2dd4bf" stroke-opacity="0.5"/>
+    <text x="28" y="33" text-anchor="middle" fill="#5eead4" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">Xray</text>
+  </g>
+
+  <path d="M610 88 H654" stroke="url(#arrow)" stroke-width="2.5" stroke-linecap="round" filter="url(#softGlow)"/>
+  <polygon points="654,88 644,83 644,93" fill="#5eead4"/>
+
+  <!-- Web / exit -->
+  <g transform="translate(666 52)">
+    <circle cx="36" cy="36" r="36" fill="#2dd4bf" fill-opacity="0.1" stroke="#2dd4bf" stroke-opacity="0.45"/>
+    <circle cx="36" cy="36" r="14" fill="none" stroke="#5eead4" stroke-width="1.5"/>
+    <ellipse cx="36" cy="36" rx="14" ry="5" fill="none" stroke="#5eead4" stroke-width="1.5"/>
+    <path d="M22 36 H50" stroke="#5eead4" stroke-width="1.5"/>
+    <path d="M36 22 V50" stroke="#5eead4" stroke-width="1.5"/>
+    <text x="36" y="88" text-anchor="middle" fill="#71717a" font-family="Inter,sans-serif" font-size="11">web</text>
+  </g>
+
+  <!-- Caption -->
+  <g transform="translate(760 62)">
+    <text x="0" y="0" fill="#e4e4e7" font-family="Inter,sans-serif" font-size="15" font-weight="600">Same route</text>
+    <text x="0" y="22" fill="#a1a1aa" font-family="Inter,sans-serif" font-size="14">as VPN / chain</text>
+    <text x="0" y="48" fill="#52525b" font-family="Inter,sans-serif" font-size="12">Enable in Proxy tab</text>
+  </g>
+</svg>

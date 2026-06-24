@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" fill="none">
+  <rect width="1200" height="320" fill="#07070f"/>
+  <rect width="1200" height="320" fill="url(#bg)" opacity="0.9"/>
+  <circle cx="180" cy="80" r="120" fill="#22d3ee" opacity="0.08"/>
+  <circle cx="1020" cy="260" r="160" fill="#a78bfa" opacity="0.1"/>
+
+  <g transform="translate(72 88)">
+    <rect width="96" height="96" rx="22" fill="#09091a" stroke="url(#g)" stroke-width="2"/>
+    <path d="M48 8 L83 28 V68 L48 88 L13 68 V28 Z" fill="url(#fill)" transform="translate(0 4) scale(1.15) translate(-8 -4)"/>
+    <path d="M25 72 H42 V52 H58 L67 32" stroke="url(#g)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="25" cy="72" r="5" fill="#22d3ee"/>
+    <circle cx="42" cy="52" r="4.5" fill="#5eead4"/>
+    <circle cx="67" cy="32" r="5.5" fill="#a78bfa"/>
+  </g>
+
+  <text x="200" y="138" fill="#f4f4f5" font-family="Inter,Segoe UI,system-ui,sans-serif" font-size="64" font-weight="800" letter-spacing="-1.5">
+    Hop<tspan fill="url(#text)">lyra</tspan>
+  </text>
+  <text x="202" y="182" fill="#a1a1aa" font-family="Inter,Segoe UI,system-ui,sans-serif" font-size="24" font-weight="500">
+    Self-hosted VPN dashboard
+  </text>
+
+  <g transform="translate(200 210)">
+    <rect x="0" y="0" width="118" height="36" rx="18" fill="#22d3ee" fill-opacity="0.12" stroke="#22d3ee" stroke-opacity="0.35"/>
+    <text x="59" y="23" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono,monospace" font-size="14" font-weight="600">AWG</text>
+    <text x="140" y="23" fill="#71717a" font-family="Inter,sans-serif" font-size="18">&#8594;</text>
+    <rect x="160" y="0" width="118" height="36" rx="18" fill="#a78bfa" fill-opacity="0.12" stroke="#a78bfa" stroke-opacity="0.35"/>
+    <text x="219" y="23" text-anchor="middle" fill="#c4b5fd" font-family="JetBrains Mono,monospace" font-size="14" font-weight="600">Tor</text>
+    <text x="300" y="23" fill="#71717a" font-family="Inter,sans-serif" font-size="18">&#8594;</text>
+    <rect x="320" y="0" width="118" height="36" rx="18" fill="#2dd4bf" fill-opacity="0.12" stroke="#2dd4bf" stroke-opacity="0.35"/>
+    <text x="379" y="23" text-anchor="middle" fill="#5eead4" font-family="JetBrains Mono,monospace" font-size="14" font-weight="600">Xray</text>
+  </g>
+
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="96" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="0.5" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="fill" x1="48" y1="8" x2="48" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0.1"/>
+    </linearGradient>
+    <linearGradient id="text" x1="200" y1="100" x2="420" y2="140" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee" stop-opacity="0.06"/>
+      <stop offset="0.55" stop-color="#07070f" stop-opacity="0"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0.08"/>
+    </linearGradient>
+  </defs>
+</svg>

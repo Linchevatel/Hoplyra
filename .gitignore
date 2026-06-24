@@ -1,0 +1,12 @@
+.venv/
+data/
+.image-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+hoplyra.db
+*.db
+.pytest_cache/
+tests/
+scripts/

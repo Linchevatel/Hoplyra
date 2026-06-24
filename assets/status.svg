@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 148" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="148" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee" stop-opacity="0.04"/>
+      <stop offset="0.5" stop-color="#09091a" stop-opacity="0"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="accentBar" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+    <linearGradient id="cpuArc" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+    <linearGradient id="ramArc" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="diskArc" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+    <filter id="cardGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="960" height="148" rx="18" fill="#09091a" stroke="#27272a"/>
+  <rect width="960" height="148" rx="18" fill="url(#bg)"/>
+  <circle cx="88" cy="40" r="48" fill="#22d3ee" opacity="0.05"/>
+  <circle cx="520" cy="130" r="64" fill="#a78bfa" opacity="0.05"/>
+
+  <text x="480" y="30" text-anchor="middle" fill="#71717a" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600" letter-spacing="0.14em">STATUS MONITORING</text>
+  <line x1="380" y1="36" x2="580" y2="36" stroke="#27272a" stroke-width="1"/>
+
+  <!-- Helper: donut group -->
+  <!-- Control host card -->
+  <g transform="translate(48 48)">
+    <rect x="0" y="0" width="196" height="84" rx="14" fill="#0c0c14" stroke="#22d3ee" stroke-opacity="0.28"/>
+    <rect x="0" y="0" width="4" height="84" rx="2" fill="url(#accentBar)"/>
+    <text x="16" y="22" fill="#67e8f9" font-family="Inter,sans-serif" font-size="12" font-weight="600">Control host</text>
+
+    <g transform="translate(18 34)">
+      <circle cx="22" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="22" cy="22" r="18" stroke="url(#cpuArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="40 73" transform="rotate(-90 22 22)"/>
+      <text x="22" y="24" text-anchor="middle" fill="#a5f3fc" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">23%</text>
+
+      <circle cx="72" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="72" cy="22" r="18" stroke="url(#ramArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="55 58" transform="rotate(-90 72 22)"/>
+      <text x="72" y="24" text-anchor="middle" fill="#c4b5fd" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">41%</text>
+
+      <circle cx="122" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="122" cy="22" r="18" stroke="url(#diskArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="68 45" transform="rotate(-90 122 22)"/>
+      <text x="122" y="24" text-anchor="middle" fill="#fcd34d" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">58%</text>
+    </g>
+    <text x="18" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">CPU</text>
+    <text x="68" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">RAM</text>
+    <text x="116" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">Disk</text>
+  </g>
+
+  <!-- VPS relay -->
+  <g transform="translate(268 48)">
+    <rect x="0" y="0" width="196" height="84" rx="14" fill="#111118" stroke="#3f3f46"/>
+    <text x="16" y="22" fill="#e4e4e7" font-family="Inter,sans-serif" font-size="12" font-weight="600">VPS relay</text>
+    <g transform="translate(18 34)">
+      <circle cx="22" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="22" cy="22" r="18" stroke="url(#cpuArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="24 89" transform="rotate(-90 22 22)"/>
+      <text x="22" y="24" text-anchor="middle" fill="#a5f3fc" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">11%</text>
+      <circle cx="72" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="72" cy="22" r="18" stroke="url(#ramArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="42 71" transform="rotate(-90 72 22)"/>
+      <text x="72" y="24" text-anchor="middle" fill="#c4b5fd" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">29%</text>
+      <circle cx="122" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="122" cy="22" r="18" stroke="url(#diskArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="36 77" transform="rotate(-90 122 22)"/>
+      <text x="122" y="24" text-anchor="middle" fill="#fcd34d" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">34%</text>
+    </g>
+    <text x="18" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">CPU</text>
+    <text x="68" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">RAM</text>
+    <text x="116" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">Disk</text>
+  </g>
+
+  <!-- VPS exit -->
+  <g transform="translate(488 48)">
+    <rect x="0" y="0" width="196" height="84" rx="14" fill="#111118" stroke="#3f3f46"/>
+    <text x="16" y="22" fill="#e4e4e7" font-family="Inter,sans-serif" font-size="12" font-weight="600">VPS exit</text>
+    <g transform="translate(18 34)">
+      <circle cx="22" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="22" cy="22" r="18" stroke="url(#cpuArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="30 83" transform="rotate(-90 22 22)"/>
+      <text x="22" y="24" text-anchor="middle" fill="#a5f3fc" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">18%</text>
+      <circle cx="72" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="72" cy="22" r="18" stroke="url(#ramArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="48 65" transform="rotate(-90 72 22)"/>
+      <text x="72" y="24" text-anchor="middle" fill="#c4b5fd" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">36%</text>
+      <circle cx="122" cy="22" r="18" stroke="#27272a" stroke-width="4.5" fill="none"/>
+      <circle cx="122" cy="22" r="18" stroke="url(#diskArc)" stroke-width="4.5" fill="none" stroke-linecap="round"
+              stroke-dasharray="52 61" transform="rotate(-90 122 22)"/>
+      <text x="122" y="24" text-anchor="middle" fill="#fcd34d" font-family="JetBrains Mono,monospace" font-size="9" font-weight="600">47%</text>
+    </g>
+    <text x="18" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">CPU</text>
+    <text x="68" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">RAM</text>
+    <text x="116" y="78" fill="#52525b" font-family="Inter,sans-serif" font-size="9">Disk</text>
+  </g>
+
+  <!-- Live + caption -->
+  <g transform="translate(724 54)">
+    <circle cx="18" cy="18" r="16" fill="#10b981" fill-opacity="0.12"/>
+    <circle cx="18" cy="18" r="10" fill="#10b981" fill-opacity="0.18"/>
+    <circle cx="18" cy="18" r="5" fill="#6ee7b7"/>
+    <rect x="44" y="6" width="96" height="24" rx="12" fill="#10b981" fill-opacity="0.1" stroke="#10b981" stroke-opacity="0.35"/>
+    <text x="92" y="22" text-anchor="middle" fill="#6ee7b7" font-family="Inter,sans-serif" font-size="12" font-weight="600">Live / 1s</text>
+
+    <text x="0" y="58" fill="#e4e4e7" font-family="Inter,sans-serif" font-size="15" font-weight="600">Load 0.42</text>
+    <text x="0" y="80" fill="#a1a1aa" font-family="Inter,sans-serif" font-size="14">34 ms / 12d uptime</text>
+    <text x="0" y="104" fill="#52525b" font-family="Inter,sans-serif" font-size="12">Polled over SSH</text>
+  </g>
+</svg>
