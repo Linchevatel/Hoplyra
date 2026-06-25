@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import shlex
 from typing import Any, Literal
+
+log = logging.getLogger(__name__)
 
 from hoplyra.chains.deployer import _chain_tag
 from hoplyra.remote import RemoteRunner, mkdir_remote, podman_compose_down, podman_compose_up
@@ -450,16 +453,25 @@ def disable_socks_proxy(
         podman_compose_down(runner, legacy_dir, f"cv-socks-{_chain_tag(config_id)}", timeout=15)
 
 
+def _resolve_socks_password(socks: dict[str, Any]) -> str | None:
+    password = socks.get("password")
+    if password:
+        return str(password)
+    enc = socks.get("passwordEnc")
+    if not enc:
+        return None
+    try:
+        return decrypt_auth_secret(str(enc))
+    except RuntimeError as exc:
+        log.warning("SOCKS password decrypt failed: %s", exc)
+        return None
+
+
 def socks_proxy_for_response(meta: dict[str, Any]) -> dict[str, Any] | None:
     socks = meta.get("socksProxy")
     if not socks or not socks.get("enabled"):
         return None
-    password = socks.get("password")
-    if not password and socks.get("passwordEnc"):
-        try:
-            password = decrypt_auth_secret(socks["passwordEnc"])
-        except RuntimeError:
-            password = None
+    password = _resolve_socks_password(socks)
     return {
         "enabled": True,
         "mode": socks.get("mode"),
