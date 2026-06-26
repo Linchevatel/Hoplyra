@@ -10,3 +10,4 @@ hoplyra.db
 .pytest_cache/
 tests/
 scripts/
+assets/preview/
