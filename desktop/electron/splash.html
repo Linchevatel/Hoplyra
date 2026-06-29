@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=520, height=360" />
+  <title>Hoplyra</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: Inter, system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      background: transparent;
+      opacity: 1;
+      transition: opacity 0.45s ease, transform 0.45s ease;
+    }
+
+    body.fade-out {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+
+    .card {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 20px;
+      background: #09091a;
+      border: 1px solid rgba(34, 211, 238, 0.18);
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+        0 24px 80px rgba(0, 0, 0, 0.55),
+        0 0 120px rgba(34, 211, 238, 0.08);
+      overflow: hidden;
+    }
+
+    .close-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 5;
+      width: 32px;
+      height: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #a1a1aa;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .close-btn:hover {
+      color: #fafafa;
+      background: rgba(239, 68, 68, 0.12);
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+
+    .aurora {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .aurora::before,
+    .aurora::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(48px);
+      animation: drift 8s ease-in-out infinite alternate;
+    }
+
+    .aurora::before {
+      width: 280px;
+      height: 280px;
+      top: -80px;
+      left: -60px;
+      background: rgba(34, 211, 238, 0.22);
+    }
+
+    .aurora::after {
+      width: 260px;
+      height: 260px;
+      bottom: -90px;
+      right: -40px;
+      background: rgba(167, 139, 250, 0.2);
+      animation-delay: -3s;
+    }
+
+    @keyframes drift {
+      from { transform: translate(0, 0) scale(1); }
+      to { transform: translate(18px, 12px) scale(1.08); }
+    }
+
+    .content {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 36px 32px 28px;
+    }
+
+    .logo-wrap {
+      position: relative;
+      width: 112px;
+      height: 112px;
+      margin-bottom: 22px;
+      animation: logo-in 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes logo-in {
+      from { opacity: 0; transform: scale(0.82) translateY(12px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .logo-ring {
+      position: absolute;
+      inset: -10px;
+      border-radius: 28px;
+      border: 1px solid rgba(34, 211, 238, 0.25);
+      animation: ring-pulse 3s ease-in-out infinite;
+    }
+
+    @keyframes ring-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.04); }
+    }
+
+    .logo {
+      width: 112px;
+      height: 112px;
+      border-radius: 24px;
+      background: rgba(14, 14, 32, 0.85);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 0 40px rgba(34, 211, 238, 0.12);
+    }
+
+    .logo svg {
+      width: 72px;
+      height: 72px;
+      animation: logo-float 4s ease-in-out infinite;
+    }
+
+    @keyframes logo-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-4px); }
+    }
+
+    .title {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #e0f2fe 0%, #22d3ee 45%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: title-in 0.8s 0.15s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes title-in {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      font-size: 13px;
+      color: #71717a;
+      animation: title-in 0.8s 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .chain {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 28px 0 24px;
+      animation: title-in 0.8s 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .node {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      position: relative;
+    }
+
+    .node::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      opacity: 0;
+      animation: node-glow 1.8s ease-in-out infinite;
+    }
+
+    .node.cyan { background: #22d3ee; box-shadow: 0 0 14px rgba(34, 211, 238, 0.55); }
+    .node.teal { background: #2dd4bf; box-shadow: 0 0 14px rgba(45, 212, 191, 0.45); }
+    .node.violet { background: #a78bfa; box-shadow: 0 0 14px rgba(167, 139, 250, 0.55); }
+
+    .node.cyan::after { background: rgba(34, 211, 238, 0.25); animation-delay: 0s; }
+    .node.teal::after { background: rgba(45, 212, 191, 0.22); animation-delay: 0.35s; }
+    .node.violet::after { background: rgba(167, 139, 250, 0.25); animation-delay: 0.7s; }
+
+    @keyframes node-glow {
+      0%, 100% { opacity: 0; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    .link {
+      width: 34px;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(34, 211, 238, 0.15), rgba(167, 139, 250, 0.15));
+      position: relative;
+      overflow: hidden;
+    }
+
+    .link::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, #22d3ee, #a78bfa, transparent);
+      transform: translateX(-120%);
+      animation: link-flow 2s ease-in-out infinite;
+    }
+
+    .link.delay::after { animation-delay: 0.5s; }
+
+    @keyframes link-flow {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(120%); }
+    }
+
+    .progress {
+      width: min(280px, 78vw);
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+      position: relative;
+      animation: title-in 0.8s 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .progress::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      width: 42%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #22d3ee, #2dd4bf, #a78bfa);
+      animation: progress-slide 1.75s ease-in-out infinite;
+      box-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
+    }
+
+    @keyframes progress-slide {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(320%); }
+    }
+
+    .status {
+      margin-top: 14px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(165, 243, 252, 0.65);
+      animation: status-pulse 2s ease-in-out infinite, title-in 0.8s 0.62s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes status-pulse {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 1; }
+    }
+
+    .particles {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .particle {
+      position: absolute;
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #22d3ee;
+      opacity: 0;
+      animation: particle-rise 4.5s linear infinite;
+    }
+
+    .particle:nth-child(1) { left: 12%; bottom: -6px; animation-delay: 0s; }
+    .particle:nth-child(2) { left: 28%; bottom: -6px; animation-delay: 0.8s; background: #a78bfa; }
+    .particle:nth-child(3) { left: 52%; bottom: -6px; animation-delay: 1.6s; }
+    .particle:nth-child(4) { left: 71%; bottom: -6px; animation-delay: 2.2s; background: #2dd4bf; }
+    .particle:nth-child(5) { left: 88%; bottom: -6px; animation-delay: 3.1s; background: #a78bfa; }
+
+    @keyframes particle-rise {
+      0% { opacity: 0; transform: translateY(0) scale(0.6); }
+      15% { opacity: 0.75; }
+      100% { opacity: 0; transform: translateY(-360px) scale(1); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <button class="close-btn" type="button" aria-label="Close" onclick="window.hoplyraDesktop?.quit()">×</button>
+    <div class="aurora"></div>
+    <div class="particles">
+      <span class="particle"></span>
+      <span class="particle"></span>
+      <span class="particle"></span>
+      <span class="particle"></span>
+      <span class="particle"></span>
+    </div>
+    <div class="content">
+      <div class="logo-wrap">
+        <div class="logo-ring"></div>
+        <div class="logo">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <path d="M16 2.75 L27.35 9.25 V22.25 L16 28.75 L4.65 22.25 V9.25 Z" fill="url(#fill)"/>
+            <path d="M16 2.75 L27.35 9.25 V22.25 L16 28.75 L4.65 22.25 V9.25 Z" stroke="url(#g)" stroke-width="1.5" stroke-linejoin="round" opacity="0.85"/>
+            <path d="M8.5 24.5 H14.25 V16.75 H20.75 L23.75 9.25" stroke="url(#g)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="8.5" cy="24.5" r="3.1" fill="url(#n1)"/>
+            <circle cx="14.25" cy="16.75" r="2.9" fill="url(#n2)"/>
+            <circle cx="23.75" cy="9.25" r="3.3" fill="url(#n3)"/>
+            <defs>
+              <linearGradient id="g" x1="4" y1="3" x2="28" y2="29" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#22d3ee"/>
+                <stop offset="0.5" stop-color="#2dd4bf"/>
+                <stop offset="1" stop-color="#a78bfa"/>
+              </linearGradient>
+              <linearGradient id="fill" x1="16" y1="3" x2="16" y2="29" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#22d3ee" stop-opacity="0.14"/>
+                <stop offset="1" stop-color="#7c3aed" stop-opacity="0.08"/>
+              </linearGradient>
+              <radialGradient id="n1" cx="32%" cy="28%" r="72%">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                <stop offset="35%" stop-color="#22d3ee"/>
+                <stop offset="100%" stop-color="#0369a1"/>
+              </radialGradient>
+              <radialGradient id="n2" cx="32%" cy="28%" r="72%">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                <stop offset="35%" stop-color="#5eead4"/>
+                <stop offset="100%" stop-color="#0f766e"/>
+              </radialGradient>
+              <radialGradient id="n3" cx="32%" cy="28%" r="72%">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                <stop offset="35%" stop-color="#c4b5fd"/>
+                <stop offset="100%" stop-color="#7c3aed"/>
+              </radialGradient>
+            </defs>
+          </svg>
+        </div>
+      </div>
+
+      <div class="title">Hoplyra</div>
+      <div class="subtitle">Multi-hop VPN control plane</div>
+
+      <div class="chain" aria-hidden="true">
+        <span class="node cyan"></span>
+        <span class="link"></span>
+        <span class="node teal"></span>
+        <span class="link delay"></span>
+        <span class="node violet"></span>
+      </div>
+
+      <div class="progress" role="progressbar" aria-label="Loading"></div>
+      <div class="status" id="status">Starting local engine…</div>
+    </div>
+  </div>
+
+  <script>
+    const lines = [
+      'Starting local engine…',
+      'Preparing secure storage…',
+      'Loading dashboard…',
+    ]
+    let i = 0
+    const status = document.getElementById('status')
+    setInterval(() => {
+      i = (i + 1) % lines.length
+      status.textContent = lines[i]
+    }, 1800)
+  </script>
+</body>
+</html>

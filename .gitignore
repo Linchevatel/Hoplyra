@@ -9,5 +9,11 @@ hoplyra.db
 *.db
 .pytest_cache/
 tests/
-scripts/
+/scripts/
 assets/preview/
+/build/
+/dist/
+desktop/node_modules/
+desktop/resources/
+desktop/dist/
+desktop/release/

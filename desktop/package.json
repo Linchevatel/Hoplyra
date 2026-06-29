@@ -1,0 +1,62 @@
+{
+  "name": "hoplyra-desktop",
+  "version": "1.3.0",
+  "private": true,
+  "description": "Hoplyra desktop app — local control plane with embedded dashboard",
+  "homepage": "https://hoplyra.com",
+  "author": {
+    "name": "Linchevatel",
+    "email": "295051633+Linchevatel@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "start": "npm run build:frontend && electron .",
+    "dev": "npm run build:frontend && electron .",
+    "build:frontend": "npm --prefix ../../frontend run build && rm -rf ../ui/dist && cp -a ../../frontend/dist ../ui/dist",
+    "build:backend": "bash scripts/build-backend.sh",
+    "build": "bash scripts/build-release.sh",
+    "build:appimage": "bash scripts/build-release.sh"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.hoplyra.desktop",
+    "productName": "Hoplyra",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icons",
+      "category": "Network",
+      "executableName": "hoplyra",
+      "synopsis": "Multi-hop VPN control plane",
+      "description": "Self-hosted VPN dashboard and chain builder",
+      "desktop": {
+        "StartupWMClass": "Hoplyra"
+      }
+    }
+  }
+}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -66,7 +68,7 @@ from hoplyra.awg_runtime import (
     upgrade_awg_on_host,
 )
 
-app = FastAPI(title="Hoplyra API", version="0.2.0")
+app = FastAPI(title="Hoplyra API", version="1.3.0")
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -1246,6 +1248,18 @@ def get_client_config(config_id: str) -> dict[str, str]:
 
 
 def _frontend_dist() -> Path | None:
+    env_ui = os.environ.get("HOPLYRA_UI_DIST", "").strip()
+    if env_ui:
+        candidate = Path(env_ui)
+        if candidate.is_dir():
+            return candidate
+
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        for candidate in (bundle_root / "ui" / "dist", bundle_root / "frontend" / "dist"):
+            if candidate.is_dir():
+                return candidate
+
     base = Path(__file__).resolve().parent.parent
     for candidate in (base.parent / "frontend" / "dist", base / "ui" / "dist"):
         if candidate.is_dir():

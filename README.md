@@ -67,6 +67,19 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 </div>
 
+## Desktop (Linux)
+
+Portable AppImage for local use — no server install required.
+
+**Download:** [Hoplyra 1.3.0 AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.0/Hoplyra-1.3.0-x86_64.AppImage)
+
+```bash
+chmod +x Hoplyra-1.3.0-x86_64.AppImage
+./Hoplyra-1.3.0-x86_64.AppImage
+```
+
+Build from source: see [desktop/README.md](desktop/README.md).
+
 ## Quick start
 
 Dependencies (Debian / Ubuntu example):
