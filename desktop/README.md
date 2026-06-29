@@ -4,7 +4,7 @@ Portable Linux AppImage — local control plane with embedded dashboard.
 
 ## Build release AppImage
 
-Requirements on the **build machine** only: Node.js 20+, Python 3.11+, `npm`, `make`/`cp`.
+Requirements on the **build machine** only: Node.js 20+, Python 3.11+, `npm`.
 
 ```bash
 cd desktop
@@ -15,7 +15,7 @@ npm run build
 Output (single file, ready for git or upload):
 
 ```
-desktop/dist/Hoplyra-0.1.0-x86_64.AppImage
+desktop/dist/Hoplyra-1.3.1-x86_64.AppImage
 desktop/dist/SHA256SUMS
 desktop/dist/README.txt
 ```
@@ -24,15 +24,18 @@ The script removes intermediate artifacts (`release/`, `resources/`, `linux-unpa
 
 ## Run on any Linux (x86_64)
 
+Requires **glibc 2.35+** (Ubuntu 22.04+, Debian 12+, Fedora 36+).
+
 ```bash
-chmod +x Hoplyra-0.1.0-x86_64.AppImage
-./Hoplyra-0.1.0-x86_64.AppImage
+sudo apt install libfuse2   # Ubuntu/Debian
+chmod +x Hoplyra-1.3.1-x86_64.AppImage
+./Hoplyra-1.3.1-x86_64.AppImage
 ```
 
 If AppImage does not start (missing FUSE):
 
 ```bash
-./Hoplyra-0.1.0-x86_64.AppImage --appimage-extract-and-run
+./Hoplyra-1.3.1-x86_64.AppImage --appimage-extract-and-run
 ```
 
 On Alt / Debian / Ubuntu install FUSE if needed:
