@@ -15,5 +15,8 @@ assets/preview/
 /dist/
 desktop/node_modules/
 desktop/resources/
-desktop/dist/
+desktop/dist/*
+!desktop/dist/*.AppImage
+!desktop/dist/SHA256SUMS
+!desktop/dist/README.txt
 desktop/release/
