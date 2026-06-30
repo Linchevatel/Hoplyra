@@ -69,21 +69,12 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 ## Desktop (Linux & Windows)
 
-**Скачать (простой способ):** **[Releases](https://github.com/Linchevatel/Hoplyra/releases)** — AppImage и `.exe` без дополнительных инструментов.
+**Скачать:** **[Releases](https://github.com/Linchevatel/Hoplyra/releases)** — AppImage и portable `.exe`.
 
-**GitHub Packages** (вкладка Packages в репозитории): `hoplyra-appimage`, `hoplyra-windows` — для CI и `oras pull`.
-
-| Platform | Releases | Packages (GHCR) |
-|---|---|---|
-| **Linux x86_64** | [AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x86_64.AppImage) | `ghcr.io/linchevatel/hoplyra-appimage:1.3.2` |
-| **Windows x64** | [portable exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x64-portable.exe) | `ghcr.io/linchevatel/hoplyra-windows:1.3.2` |
-
-Скачать из Packages (ORAS):
-
-```bash
-oras pull ghcr.io/linchevatel/hoplyra-appimage:1.3.2
-oras pull ghcr.io/linchevatel/hoplyra-windows:1.3.2
-```
+| Platform | Download |
+|---|---|
+| **Linux x86_64** | [AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x86_64.AppImage) |
+| **Windows x64** | [portable exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x64-portable.exe) |
 
 Файлы также лежат в `desktop/dist/` (Git LFS).
 
