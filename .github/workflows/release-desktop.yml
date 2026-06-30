@@ -1,0 +1,43 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Collect desktop artifacts
+        run: |
+          test -f desktop/dist/Hoplyra-1.3.2-x86_64.AppImage
+          test -f desktop/dist/Hoplyra-1.3.2-x64-portable.exe
+          test -f desktop/dist/SHA256SUMS
+          test -f desktop/dist/README.txt
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="v1.3.2"
+          fi
+          gh release view "$TAG" 2>/dev/null || gh release create "$TAG" \
+            --title "Hoplyra ${TAG#v}" \
+            --notes-file desktop/dist/README.txt
+          gh release upload "$TAG" \
+            desktop/dist/Hoplyra-1.3.2-x86_64.AppImage \
+            desktop/dist/Hoplyra-1.3.2-x64-portable.exe \
+            desktop/dist/README.txt \
+            desktop/dist/SHA256SUMS \
+            --clobber

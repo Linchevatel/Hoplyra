@@ -69,12 +69,12 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 ## Desktop (Linux & Windows)
 
-Portable builds for local use — no server install required.
+Portable builds — also on the **[Releases](https://github.com/Linchevatel/Hoplyra/releases)** page and in `desktop/dist/`:
 
 | Platform | File |
 |---|---|
-| **Linux x86_64** | [Hoplyra-1.3.2-x86_64.AppImage](desktop/dist/Hoplyra-1.3.2-x86_64.AppImage) |
-| **Windows x64** | [Hoplyra-1.3.2-x64-portable.exe](desktop/dist/Hoplyra-1.3.2-x64-portable.exe) |
+| **Linux x86_64** | [Hoplyra-1.3.2-x86_64.AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x86_64.AppImage) |
+| **Windows x64** | [Hoplyra-1.3.2-x64-portable.exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.2/Hoplyra-1.3.2-x64-portable.exe) |
 
 Linux:
 
