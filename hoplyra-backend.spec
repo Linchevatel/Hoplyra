@@ -1,17 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 root = Path(SPECPATH)
 
-a = Analysis(
-    [str(root / "run.py")],
-    pathex=[str(root)],
-    binaries=[],
-    datas=[
-        (str(root / "ui" / "dist"), "ui/dist"),
-        (str(root / "hoplyra" / "images"), "hoplyra/images"),
-    ],
-    hiddenimports=[
+hiddenimports = collect_submodules("hoplyra") + [
         "hoplyra.desktop_env",
         "hoplyra.logging_config",
         "uvicorn.logging",
@@ -65,7 +59,18 @@ a = Analysis(
         "h11",
         "click",
         "starlette.middleware.sessions",
+        "psutil",
+]
+
+a = Analysis(
+    [str(root / "run.py")],
+    pathex=[str(root)],
+    binaries=[],
+    datas=[
+        (str(root / "ui" / "dist"), "ui/dist"),
+        (str(root / "hoplyra" / "images"), "hoplyra/images"),
     ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

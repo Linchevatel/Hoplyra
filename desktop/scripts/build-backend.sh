@@ -10,7 +10,8 @@ cd "$BACKEND"
 
 if [[ ! -x .venv/bin/python ]]; then
   echo "==> Creating backend venv..."
-  python3 -m venv .venv
+  PYTHON="${PYTHON:-python3}"
+  "$PYTHON" -m venv .venv
   .venv/bin/pip install -r requirements.txt
 fi
 

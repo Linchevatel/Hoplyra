@@ -26,15 +26,32 @@ export function resolveBackendRoot(packaged) {
   return path.resolve(__dirname, '../..')
 }
 
+function backendBinaryName() {
+  return process.platform === 'win32' ? 'hoplyra-backend.exe' : 'hoplyra-backend'
+}
+
+function devPythonPath(backendRoot) {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(backendRoot, '.venv', 'Scripts', 'python.exe'),
+          path.join(backendRoot, '.venv', 'Scripts', 'python'),
+        ]
+      : [path.join(backendRoot, '.venv', 'bin', 'python')]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return process.platform === 'win32' ? 'python' : 'python3'
+}
+
 export function resolveBackendLaunch(packaged) {
   const backendRoot = resolveBackendRoot(packaged)
   if (packaged) {
-    const binary = path.join(backendRoot, 'hoplyra-backend')
+    const binary = path.join(backendRoot, backendBinaryName())
     return { command: binary, args: [], cwd: backendRoot }
   }
 
-  const venvPython = path.join(backendRoot, '.venv/bin/python')
-  const python = fs.existsSync(venvPython) ? venvPython : 'python3'
+  const python = devPythonPath(backendRoot)
   return {
     command: python,
     args: [path.join(backendRoot, 'run.py')],

@@ -17,6 +17,7 @@ desktop/node_modules/
 desktop/resources/
 desktop/dist/*
 !desktop/dist/*.AppImage
+!desktop/dist/*.exe
 !desktop/dist/SHA256SUMS
 !desktop/dist/README.txt
 desktop/release/

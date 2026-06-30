@@ -3,98 +3,102 @@ from __future__ import annotations
 import shlex
 import socket
 import subprocess
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
 from hoplyra import db
 from hoplyra.remote import RemoteRunner, ServerTarget, measure_tcp_latency, test_ssh_auth
+from hoplyra.secrets import decrypt_auth_secret
 
 CONTROL_SERVER_ID = "__control__"
 
-METRICS_SCRIPT = """
-read_cpu() {
-  read _ u n s id iw ir sf st _gn < /proc/stat
-  echo $((u + n + s + id + iw + ir + sf + st)) $((id + iw))
-}
-read_net() {
-  awk 'NR>2 {
-    gsub(":", "", $1)
-    if ($1 != "lo" && $1 !~ /^(docker|veth|br-|virbr|podman)/) { rx += $2; tx += $10 }
-  } END { print rx + 0, tx + 0 }' /proc/net/dev
-}
-uptime_s=$(cut -d. -f1 /proc/uptime)
-read l1 l2 l3 _rest < /proc/loadavg || true
-mt=$(awk '/^MemTotal/ {print $2; exit}' /proc/meminfo)
-ma=$(awk '/^MemAvailable/ {print $2; exit}' /proc/meminfo)
-[ -n "$ma" ] || ma=$(awk '/^MemFree/ {print $2; exit}' /proc/meminfo)
-disk_line=$(df -B1 / 2>/dev/null | tail -1)
-dt=$(echo "$disk_line" | awk '{print $2}')
-du=$(echo "$disk_line" | awk '{print $3}')
-da=$(echo "$disk_line" | awk '{print $4}')
-read nr1 nt1 < <(read_net)
-read t1 i1 < <(read_cpu)
-sleep 1
-read t2 i2 < <(read_cpu)
-read nr2 nt2 < <(read_net)
-d=$((t2 - t1))
-di=$((i2 - i1))
-cpu=$(awk -v d="$d" -v i="$di" 'BEGIN {
-  if (d > 0) { v = (1 - i / d) * 100 } else { v = 0 }
-  if (v < 0) v = 0
-  if (v > 100) v = 100
-  printf "%.1f", v
-}')
-net_rx=$(awk -v a="$nr1" -v b="$nr2" 'BEGIN { d = b - a; if (d < 0) d = 0; printf "%.0f", d }')
-net_tx=$(awk -v a="$nt1" -v b="$nt2" 'BEGIN { d = b - a; if (d < 0) d = 0; printf "%.0f", d }')
-cnt=$( (podman ps -q 2>/dev/null || docker ps -q 2>/dev/null) | wc -l | tr -d ' ')
-printf 'uptime_s=%s\nload1=%s\nload2=%s\nload3=%s\nmem_total_kb=%s\nmem_avail_kb=%s\ndisk_total_b=%s\ndisk_used_b=%s\ndisk_avail_b=%s\ncpu_percent=%s\nnet_rx_bps=%s\nnet_tx_bps=%s\ncontainers=%s\n' \
-  "$uptime_s" "$l1" "$l2" "$l3" "$mt" "$ma" "$dt" "$du" "$da" "$cpu" "$net_rx" "$net_tx" "$cnt"
+METRICS_PY = r"""
+import subprocess
+import time
+from pathlib import Path
+
+def read_cpu():
+    parts = Path("/proc/stat").read_text().splitlines()[0].split()[1:11]
+    nums = [int(x) for x in parts]
+    idle = nums[3] + nums[4]
+    return sum(nums), idle
+
+def read_net():
+    rx = tx = 0
+    skip = ("lo", "docker", "veth", "br-", "virbr", "podman")
+    for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
+        parts = line.split()
+        if not parts:
+            continue
+        iface = parts[0].rstrip(":")
+        if iface == "lo" or any(iface.startswith(p) for p in skip):
+            continue
+        rx += int(parts[1])
+        tx += int(parts[9])
+    return rx, tx
+
+def container_count():
+    for cmd in (("podman", "ps", "-q"), ("docker", "ps", "-q")):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if r.returncode == 0:
+                return len([ln for ln in r.stdout.splitlines() if ln.strip()])
+        except Exception:
+            pass
+    return 0
+
+def meminfo():
+    data = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        data[key.strip()] = int(val.strip().split()[0])
+    total = data.get("MemTotal")
+    avail = data.get("MemAvailable", data.get("MemFree"))
+    return total, avail
+
+def diskinfo():
+    line = subprocess.run(
+        ["df", "-B1", "/"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    ).stdout.strip().splitlines()[-1].split()
+    return int(line[1]), int(line[2]), int(line[3])
+
+uptime_s = int(float(Path("/proc/uptime").read_text().split()[0]))
+load1, load2, load3, *_ = (Path("/proc/loadavg").read_text().split() + ["0", "0", "0"])[:3]
+mt, ma = meminfo()
+dt, du, da = diskinfo()
+nr1, nt1 = read_net()
+t1, i1 = read_cpu()
+time.sleep(1)
+nr2, nt2 = read_net()
+t2, i2 = read_cpu()
+d = max(t2 - t1, 1)
+cpu = max(0.0, min(100.0, (1 - (i2 - i1) / d) * 100))
+net_rx = max(0, nr2 - nr1)
+net_tx = max(0, nt2 - nt1)
+cnt = container_count()
+print(
+    f"uptime_s={uptime_s}\n"
+    f"load1={load1}\nload2={load2}\nload3={load3}\n"
+    f"mem_total_kb={mt}\nmem_avail_kb={ma}\n"
+    f"disk_total_b={dt}\ndisk_used_b={du}\ndisk_avail_b={da}\n"
+    f"cpu_percent={cpu:.1f}\n"
+    f"net_rx_bps={net_rx}\nnet_tx_bps={net_tx}\n"
+    f"containers={cnt}\n",
+    end="",
+)
 """.strip()
 
-FALLBACK_SCRIPT = """
-read_cpu() {
-  read _ u n s id iw ir sf st _gn < /proc/stat
-  echo $((u + n + s + id + iw + ir + sf + st)) $((id + iw))
-}
-read_net() {
-  awk 'NR>2 {
-    gsub(":", "", $1)
-    if ($1 != "lo" && $1 !~ /^(docker|veth|br-|virbr|podman)/) { rx += $2; tx += $10 }
-  } END { print rx + 0, tx + 0 }' /proc/net/dev
-}
-mt=$(awk '/^MemTotal/ {print $2; exit}' /proc/meminfo)
-ma=$(awk '/^MemAvailable/ {print $2; exit}' /proc/meminfo)
-[ -n "$ma" ] || ma=$(awk '/^MemFree/ {print $2; exit}' /proc/meminfo)
-disk_line=$(df -B1 / 2>/dev/null | tail -1)
-dt=$(echo "$disk_line" | awk '{print $2}')
-du=$(echo "$disk_line" | awk '{print $3}')
-da=$(echo "$disk_line" | awk '{print $4}')
-uptime_s=$(cut -d. -f1 /proc/uptime)
-read l1 l2 l3 _rest < /proc/loadavg || true
-read nr1 nt1 < <(read_net)
-read t1 i1 < <(read_cpu)
-sleep 1
-read t2 i2 < <(read_cpu)
-read nr2 nt2 < <(read_net)
-d=$((t2 - t1))
-di=$((i2 - i1))
-cpu=$(awk -v d="$d" -v i="$di" 'BEGIN {
-  if (d > 0) { v = (1 - i / d) * 100 } else { v = 0 }
-  if (v < 0) v = 0
-  if (v > 100) v = 100
-  printf "%.1f", v
-}')
-net_rx=$(awk -v a="$nr1" -v b="$nr2" 'BEGIN { d = b - a; if (d < 0) d = 0; printf "%.0f", d }')
-net_tx=$(awk -v a="$nt1" -v b="$nt2" 'BEGIN { d = b - a; if (d < 0) d = 0; printf "%.0f", d }')
-cnt=$( (podman ps -q 2>/dev/null || docker ps -q 2>/dev/null) | wc -l | tr -d ' ')
-printf 'uptime_s=%s\nload1=%s\nload2=%s\nload3=%s\nmem_total_kb=%s\nmem_avail_kb=%s\ndisk_total_b=%s\ndisk_used_b=%s\ndisk_avail_b=%s\ncpu_percent=%s\nnet_rx_bps=%s\nnet_tx_bps=%s\ncontainers=%s\n' \
-  "$uptime_s" "$l1" "$l2" "$l3" "$mt" "$ma" "$dt" "$du" "$da" "$cpu" "$net_rx" "$net_tx" "$cnt"
-""".strip()
 
-
-def _remote_shell(script: str) -> str:
-    return f"bash -lc {shlex.quote(script)}"
+def _metrics_python_cmd() -> str:
+    return f"python3 -c {shlex.quote(METRICS_PY)}"
 
 
 def _parse_kv_output(text: str) -> dict[str, str]:
@@ -154,9 +158,11 @@ def _metrics_from_kv(kv: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _run_metrics_script(script: str, *, timeout: int) -> dict[str, str]:
+def _run_metrics_script(*, timeout: int) -> dict[str, str]:
+    if sys.platform == "win32":
+        return _run_metrics_script_windows(timeout=timeout)
     proc = subprocess.run(
-        ["bash", "-lc", script],
+        ["python3", "-c", METRICS_PY],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -167,9 +173,67 @@ def _run_metrics_script(script: str, *, timeout: int) -> dict[str, str]:
     return _parse_kv_output(proc.stdout)
 
 
-def _metrics_payload_from_script(script: str, *, timeout: int) -> dict[str, Any]:
+def _container_count_local() -> int:
+    for cmd in (
+        ("podman", "ps", "-q"),
+        ("docker", "ps", "-q"),
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if proc.returncode == 0:
+                return len([ln for ln in proc.stdout.splitlines() if ln.strip()])
+        except OSError:
+            pass
+    return 0
+
+
+def _run_metrics_script_windows(*, timeout: int) -> dict[str, str]:
+    del timeout
+    import psutil
+
+    disk_root = "C:\\" if sys.platform == "win32" else "/"
+    net1 = psutil.net_io_counters()
+    cpu_sample = psutil.cpu_percent(interval=None)
+    time.sleep(1)
+    cpu = psutil.cpu_percent(interval=None)
+    if cpu_sample is not None and cpu == 0.0:
+        cpu = cpu_sample
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage(disk_root)
+    net2 = psutil.net_io_counters()
+    uptime_s = max(0, int(time.time() - psutil.boot_time()))
+    load1 = load5 = load15 = None
+    try:
+        load1, load5, load15 = psutil.getloadavg()
+    except (AttributeError, OSError):
+        pass
+
+    nr1 = net1.bytes_recv if net1 else 0
+    nt1 = net1.bytes_sent if net1 else 0
+    nr2 = net2.bytes_recv if net2 else 0
+    nt2 = net2.bytes_sent if net2 else 0
+
+    kv = {
+        "uptime_s": str(uptime_s),
+        "load1": "" if load1 is None else str(load1),
+        "load2": "" if load5 is None else str(load5),
+        "load3": "" if load15 is None else str(load15),
+        "mem_total_kb": str(mem.total // 1024),
+        "mem_avail_kb": str(mem.available // 1024),
+        "disk_total_b": str(disk.total),
+        "disk_used_b": str(disk.used),
+        "disk_avail_b": str(disk.free),
+        "cpu_percent": f"{cpu:.1f}",
+        "net_rx_bps": str(max(0, nr2 - nr1)),
+        "net_tx_bps": str(max(0, nt2 - nt1)),
+        "containers": str(_container_count_local()),
+    }
+    return kv
+
+
+def _metrics_payload_from_script(*, timeout: int) -> dict[str, Any]:
     collected_at = datetime.now(timezone.utc).isoformat()
-    kv = _run_metrics_script(script, timeout=timeout)
+    kv = _run_metrics_script(timeout=timeout)
     metrics = _metrics_from_kv(kv)
     if metrics["memoryTotalBytes"] is None and metrics["cpuPercent"] is None:
         raise RuntimeError("metrics output incomplete")
@@ -208,7 +272,7 @@ def collect_local_metrics() -> dict[str, Any]:
         "error": None,
     }
     try:
-        base.update(_metrics_payload_from_script(METRICS_SCRIPT, timeout=10))
+        base.update(_metrics_payload_from_script(timeout=10))
         base["online"] = True
         return base
     except Exception as exc:
@@ -218,11 +282,9 @@ def collect_local_metrics() -> dict[str, Any]:
 
 def collect_server_metrics(runner: RemoteRunner) -> dict[str, Any]:
     collected_at = datetime.now(timezone.utc).isoformat()
-    code, out, err = runner.run(_remote_shell(METRICS_SCRIPT), timeout=20)
+    code, out, err = runner.run(_metrics_python_cmd(), timeout=20)
     if code != 0 or not out.strip():
-        code, out, err = runner.run(_remote_shell(FALLBACK_SCRIPT), timeout=15)
-        if code != 0 or not out.strip():
-            raise RuntimeError((err or out or "metrics command failed").strip()[:500])
+        raise RuntimeError((err or out or "metrics command failed").strip()[:500])
 
     kv = _parse_kv_output(out)
     metrics = _metrics_from_kv(kv)
@@ -286,11 +348,6 @@ def metrics_for_target(
         base["error"] = "VPS is still preparing"
         return base
 
-    ssh_ok, ssh_err = test_ssh_auth(runner.target)
-    if not ssh_ok:
-        base["error"] = ssh_err or "SSH unavailable"
-        return base
-
     base["online"] = True
     try:
         metrics = collect_server_metrics(runner)
@@ -310,13 +367,38 @@ def collect_metrics_batch(rows: list[Any]) -> list[dict[str, Any]]:
         return []
 
     def one(row: Any) -> dict[str, Any]:
+        secret = decrypt_auth_secret(row["auth_secret"])
+        if not secret:
+            return {
+                "serverId": row["id"],
+                "name": row["name"],
+                "host": row["host"],
+                "latencyMs": row["latency_ms"],
+                "online": False,
+                "collectedAt": datetime.now(timezone.utc).isoformat(),
+                "uptimeSeconds": None,
+                "load1": None,
+                "load5": None,
+                "load15": None,
+                "cpuPercent": None,
+                "memoryTotalBytes": None,
+                "memoryUsedBytes": None,
+                "memoryAvailableBytes": None,
+                "diskTotalBytes": None,
+                "diskUsedBytes": None,
+                "diskAvailableBytes": None,
+                "containerCount": None,
+                "networkRxBps": None,
+                "networkTxBps": None,
+                "error": "Server credentials missing",
+            }
         target = RemoteRunner(
             ServerTarget(
                 host=row["host"],
                 port=row["port"],
                 username=row["username"],
-                auth_type="password",
-                auth_secret=row["auth_secret"],
+                auth_type=row["auth_type"] or "password",
+                auth_secret=secret,
             )
         )
         return metrics_for_target(
@@ -329,7 +411,7 @@ def collect_metrics_batch(rows: list[Any]) -> list[dict[str, Any]]:
         )
 
     results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(6, len(rows))) as pool:
+    with ThreadPoolExecutor(max_workers=min(3, len(rows))) as pool:
         futures = {pool.submit(one, row): row["id"] for row in rows}
         for fut in as_completed(futures):
             results.append(fut.result())

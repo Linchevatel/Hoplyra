@@ -1,10 +1,19 @@
 # Hoplyra Desktop
 
-Portable Linux AppImage — local control plane with embedded dashboard.
+Portable desktop builds — local control plane with embedded dashboard.
 
-## Build release AppImage
+## Release files
 
-Requirements on the **build machine** only: Node.js 20+, Python 3.11+, `npm`.
+```
+desktop/dist/Hoplyra-1.3.2-x86_64.AppImage
+desktop/dist/Hoplyra-1.3.2-x64-portable.exe
+desktop/dist/SHA256SUMS
+desktop/dist/README.txt
+```
+
+## Build Linux AppImage
+
+Requirements on the **build machine**: Node.js 20+, Python 3.11+, Docker (recommended).
 
 ```bash
 cd desktop
@@ -12,60 +21,49 @@ npm install
 npm run build
 ```
 
-Output (single file, ready for git or upload):
+## Build Windows portable
 
+GitHub Actions in the private `Hoplyra-desktop` repo, or locally on Windows:
+
+```powershell
+cd desktop
+npm install
+npm run build:win
 ```
-desktop/dist/Hoplyra-1.3.1-x86_64.AppImage
-desktop/dist/SHA256SUMS
-desktop/dist/README.txt
-```
 
-The script removes intermediate artifacts (`release/`, `resources/`, `linux-unpacked/`).
-
-## Run on any Linux (x86_64)
+## Run on Linux (x86_64)
 
 Requires **glibc 2.35+** (Ubuntu 22.04+, Debian 12+, Fedora 36+).
 
 ```bash
 sudo apt install libfuse2   # Ubuntu/Debian
-chmod +x Hoplyra-1.3.1-x86_64.AppImage
-./Hoplyra-1.3.1-x86_64.AppImage
+chmod +x Hoplyra-1.3.2-x86_64.AppImage
+./Hoplyra-1.3.2-x86_64.AppImage
 ```
 
 If AppImage does not start (missing FUSE):
 
 ```bash
-./Hoplyra-1.3.1-x86_64.AppImage --appimage-extract-and-run
+./Hoplyra-1.3.2-x86_64.AppImage --appimage-extract-and-run
 ```
 
-On Alt / Debian / Ubuntu install FUSE if needed:
+## Run on Windows
 
-```bash
-sudo apt install fuse libfuse2   # Debian/Ubuntu/Alt
-sudo dnf install fuse fuse-libs  # Fedora
-```
+Double-click `Hoplyra-1.3.2-x64-portable.exe`.
+
+Data directory: `%APPDATA%\hoplyra-desktop\hoplyra-data\`
 
 ## Commit to git
 
-Track only the release folder contents:
+Track only the release folder contents (Git LFS for AppImage and exe):
 
 ```
 dist/Hoplyra-*-x86_64.AppImage
+dist/Hoplyra-*-x64-portable.exe
 dist/SHA256SUMS
 dist/README.txt
 build/icons/
 ```
-
-Everything else is in `.gitignore`.
-
-**Size ~130–140 MB.** GitHub rejects files **> 100 MB** — use one of:
-
-1. **GitHub Releases** (recommended) — attach AppImage to a release tag
-2. **Git LFS** — `.gitattributes` already prepared:
-   ```bash
-   git lfs install
-   git lfs track "*.AppImage"
-   ```
 
 ## Dev (from source)
 

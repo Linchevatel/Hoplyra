@@ -61,4 +61,4 @@ class MetricsCache:
         return payload
 
 
-metrics_cache = MetricsCache(interval=1.0)
+metrics_cache = MetricsCache(interval=5.0)

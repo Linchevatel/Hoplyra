@@ -14,6 +14,7 @@ log = logging.getLogger("hoplyra")
 _PUBLIC_API = {
     "/api/health",
     "/api/auth/login",
+    "/api/auth/logout",
     "/api/auth/me",
 }
 

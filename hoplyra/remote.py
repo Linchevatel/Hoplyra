@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import ipaddress
 import shlex
+import shutil
 import socket
 import subprocess
+import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +18,9 @@ import paramiko
 from hoplyra.host_setup import ensure_host_ready, get_runtime_info, container_runtime_ready
 
 _LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain"})
+_SSH_CONNECT_ATTEMPTS = 5
+_SSH_MAX_INFLIGHT = 4
+_SSH_GATE = threading.BoundedSemaphore(_SSH_MAX_INFLIGHT)
 
 
 def is_local_host(host: str) -> bool:
@@ -51,21 +57,126 @@ class _PasswordOnlyAuth:
         transport.auth_password(self.username, self.password)
 
 
+def _ssh_timeouts() -> tuple[float, float, float]:
+    if sys.platform == "win32":
+        return 30.0, 60.0, 30.0
+    return 25.0, 60.0, 25.0
+
+
+def _open_tcp_socket(host: str, port: int, *, timeout: float) -> socket.socket:
+    errors: list[OSError] = []
+    families = (socket.AF_INET, socket.AF_UNSPEC)
+
+    for family in families:
+        try:
+            infos = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except OSError as exc:
+            errors.append(exc)
+            continue
+        for info in infos:
+            fam, socktype, proto, _, addr = info
+            sock = socket.socket(fam, socktype, proto)
+            sock.settimeout(timeout)
+            try:
+                sock.connect(addr)
+                return sock
+            except OSError as exc:
+                errors.append(exc)
+                sock.close()
+
+    if errors:
+        raise errors[-1]
+    raise OSError(f"Cannot connect to {host}:{port}")
+
+
 def _connect_kwargs(target: ServerTarget) -> dict:
     if not target.auth_secret:
         raise ValueError("SSH password is required")
 
+    connect_timeout, banner_timeout, auth_timeout = _ssh_timeouts()
     return {
         "hostname": target.host,
         "port": target.port,
         "username": target.username,
-        "timeout": 20,
-        "banner_timeout": 20,
-        "auth_timeout": 20,
+        "timeout": connect_timeout,
+        "banner_timeout": banner_timeout,
+        "auth_timeout": auth_timeout,
         "auth_strategy": _PasswordOnlyAuth(target.username, target.auth_secret),
         "allow_agent": False,
         "look_for_keys": False,
     }
+
+
+def _friendly_ssh_error(exc: Exception, *, username: str = "root", host: str = "") -> str:
+    msg = str(exc).strip()[:500]
+    lower = msg.lower()
+    if "banner" in lower or "eof" in lower:
+        hint_host = host or "<IP>"
+        platform_hint = (
+            "разрешите hoplyra-backend.exe в брандмауэре Windows"
+            if sys.platform == "win32"
+            else "проверьте доступность SSH с этой машины"
+        )
+        return (
+            f"{msg}. Проверьте IP и SSH-порт, {platform_hint} "
+            f"и проверьте доступ: ssh {username}@{hint_host}"
+        )
+    return msg
+
+
+def _is_transient_ssh_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(token in msg for token in ("banner", "eof", "timed out", "timeout", "connection reset"))
+
+
+def _connect_ssh_once(client: paramiko.SSHClient, target: ServerTarget) -> None:
+    kwargs = _connect_kwargs(target)
+    connect_timeout = float(kwargs.pop("timeout"))
+    banner_timeout = float(kwargs.pop("banner_timeout"))
+    auth_timeout = float(kwargs.pop("auth_timeout"))
+    sock = _open_tcp_socket(target.host, target.port, timeout=connect_timeout)
+    client.connect(
+        timeout=connect_timeout,
+        banner_timeout=banner_timeout,
+        auth_timeout=auth_timeout,
+        sock=sock,
+        **kwargs,
+    )
+
+
+def _sshpass_available() -> bool:
+    if sys.platform == "win32":
+        return False
+    return shutil.which("sshpass") is not None and shutil.which("ssh") is not None
+
+
+def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tuple[int, str, str]:
+    if not target.auth_secret:
+        raise ValueError("SSH password is required")
+    proc = subprocess.run(
+        [
+            "sshpass",
+            "-p",
+            target.auth_secret,
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            f"ConnectTimeout={min(max(timeout, 5), 30)}",
+            "-p",
+            str(target.port),
+            f"{target.username}@{target.host}",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 @contextmanager
@@ -74,13 +185,30 @@ def ssh_client(target: ServerTarget) -> Iterator[paramiko.SSHClient]:
         yield None                      
         return
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(**_connect_kwargs(target))
-    try:
-        yield client
-    finally:
-        client.close()
+    last_exc: Exception | None = None
+    with _SSH_GATE:
+        for attempt in range(_SSH_CONNECT_ATTEMPTS):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                _connect_ssh_once(client, target)
+            except (TimeoutError, paramiko.SSHException, OSError) as exc:
+                last_exc = exc
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                if attempt + 1 < _SSH_CONNECT_ATTEMPTS and _is_transient_ssh_error(exc):
+                    time.sleep(min(3.0 * (attempt + 1), 12.0))
+                    continue
+                raise
+            try:
+                yield client
+            finally:
+                client.close()
+            return
+    if last_exc is not None:
+        raise last_exc
 
 
 class RemoteRunner:
@@ -111,6 +239,13 @@ class RemoteRunner:
                 if attempt + 1 < retries:
                     time.sleep(min(5 * (attempt + 1), 15))
                     continue
+
+        if _sshpass_available():
+            try:
+                return _run_ssh_subprocess(self.target, command, timeout=timeout)
+            except (TimeoutError, OSError, subprocess.SubprocessError) as exc:
+                last_exc = exc
+
         assert last_exc is not None
         raise last_exc
 
@@ -171,7 +306,16 @@ def test_ssh_auth(target: ServerTarget) -> tuple[bool, str | None]:
         detail = (err or out or "SSH authentication failed").strip()
         return False, detail[:500]
     except Exception as exc:
-        msg = str(exc)[:500]
+        if _sshpass_available() and _is_transient_ssh_error(exc):
+            try:
+                code, out, err = _run_ssh_subprocess(target, "echo HOPLYRA_OK", timeout=30)
+                if code == 0 and "HOPLYRA_OK" in out:
+                    return True, None
+                detail = (err or out or "SSH authentication failed").strip()
+                return False, detail[:500]
+            except Exception as fallback_exc:
+                exc = fallback_exc
+        msg = _friendly_ssh_error(exc, username=target.username, host=target.host)
         if "Private key" in msg or "encrypted" in msg.lower():
             return False, "Укажите пароль SSH пользователя (root), не ключ."
         return False, msg

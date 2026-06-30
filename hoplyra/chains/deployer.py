@@ -379,16 +379,24 @@ Endpoint = {plan.exit.server_host}:{link_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
-        exit_compose = f"services:\n{compose_wg_service(
-            f'cv-link-exit-{_chain_tag(config_id)}',
-            f'{exit_path}/wg-link.conf',
-            service_name='wg-link',
-        )}\n"
-        entry_compose = f"services:\n{compose_wg_service(
-            f'cv-link-entry-{_chain_tag(config_id)}',
-            f'{entry_path}/wg-link.conf',
-            service_name='wg-link',
-        )}\n"
+        exit_compose = (
+            "services:\n"
+            + compose_wg_service(
+                f"cv-link-exit-{_chain_tag(config_id)}",
+                f"{exit_path}/wg-link.conf",
+                service_name="wg-link",
+            )
+            + "\n"
+        )
+        entry_compose = (
+            "services:\n"
+            + compose_wg_service(
+                f"cv-link-entry-{_chain_tag(config_id)}",
+                f"{entry_path}/wg-link.conf",
+                service_name="wg-link",
+            )
+            + "\n"
+        )
         exit_runner.upload_text(f"{exit_path}/wg-link.conf", exit_conf, 0o600)
         exit_runner.upload_text(f"{exit_path}/docker-compose.yml", exit_compose)
         entry_runner.upload_text(f"{entry_path}/wg-link.conf", entry_conf, 0o600)
@@ -423,11 +431,15 @@ PostDown = {nat_postdown("10.77.0.0/30")}
 PublicKey = {relay_pub}
 AllowedIPs = 10.77.0.2/32
 """
-        compose = f"services:\n{compose_wg_service(
-            f'cv-wgexit-{_chain_tag(config_id)}',
-            f'{path}/wg.conf',
-            service_name='wg-exit',
-        )}\n"
+        compose = (
+            "services:\n"
+            + compose_wg_service(
+                f"cv-wgexit-{_chain_tag(config_id)}",
+                f"{path}/wg.conf",
+                service_name="wg-exit",
+            )
+            + "\n"
+        )
         runner.upload_text(f"{path}/wg.conf", wg_conf, 0o600)
         runner.upload_text(f"{path}/relay.key", relay_priv, 0o600)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
@@ -459,13 +471,17 @@ VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 Log err file /dev/null
 """
-        compose = f"services:\n{compose_tor_service(
-            f'cv-tor-exit-{_chain_tag(config_id)}',
-            path,
-            service_name='tor-exit',
-            tor_data_volume=True,
-            privileged=True,
-        )}\nvolumes:\n  tor-data:\n"
+        compose = (
+            "services:\n"
+            + compose_tor_service(
+                f"cv-tor-exit-{_chain_tag(config_id)}",
+                path,
+                service_name="tor-exit",
+                tor_data_volume=True,
+                privileged=True,
+            )
+            + "\nvolumes:\n  tor-data:\n"
+        )
         runner.upload_text(f"{path}/torrc", torrc)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
@@ -1284,12 +1300,16 @@ Log err file /dev/null
         xray_cfg = self._xray_chain_config(
             downstream, via_tor=via_tor, entry_redirect=False, relay_inbound=True
         )
-        compose = f"services:\n{compose_xray_service(
-            f'cv-xrelay-{_chain_tag(config_id)}',
-            path,
-            service_name='xray-relay',
-            config_file='config.json',
-        )}\n"
+        compose = (
+            "services:\n"
+            + compose_xray_service(
+                f"cv-xrelay-{_chain_tag(config_id)}",
+                path,
+                service_name="xray-relay",
+                config_file="config.json",
+            )
+            + "\n"
+        )
         runner.upload_text(f"{path}/config.json", json.dumps(xray_cfg, indent=2))
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
@@ -1366,10 +1386,14 @@ Endpoint = {hop.server_host}:51820
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
-        compose = f"services:\n{compose_wg_service(
-            f'cv-chain-wg-{_chain_tag(config_id)}',
-            f'{path}/wg0.conf',
-        )}\n"
+        compose = (
+            "services:\n"
+            + compose_wg_service(
+                f"cv-chain-wg-{_chain_tag(config_id)}",
+                f"{path}/wg0.conf",
+            )
+            + "\n"
+        )
         runner.upload_text(f"{path}/wg0.conf", wg_conf, 0o600)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)

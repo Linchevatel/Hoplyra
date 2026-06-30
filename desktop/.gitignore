@@ -1,4 +1,8 @@
 node_modules/
 release/
 resources/
-dist/
+dist/*
+!dist/*.AppImage
+!dist/*.exe
+!dist/README.txt
+!dist/SHA256SUMS

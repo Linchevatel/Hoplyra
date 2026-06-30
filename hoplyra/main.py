@@ -68,7 +68,7 @@ from hoplyra.awg_runtime import (
     upgrade_awg_on_host,
 )
 
-app = FastAPI(title="Hoplyra API", version="1.3.0")
+app = FastAPI(title="Hoplyra API", version="1.3.2")
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -284,6 +284,68 @@ def _purge_configs_on_server(configs: list[Any]) -> None:
             log.warning("Cleanup config %s on server delete failed: %s", cfg["id"], exc)
 
 
+def _apply_server_probe(row: Any, probe: dict[str, Any], *, runtime: str | None = None) -> None:
+    status = probe["status"]
+    if runtime:
+        status = "online"
+    with connect() as conn:
+        conn.execute(
+            "UPDATE servers SET status=?, latency_ms=?, last_seen=?, os=COALESCE(?, os) WHERE id=?",
+            (
+                status,
+                probe.get("latencyMs"),
+                probe.get("lastSeen") or db._now(),
+                probe.get("os"),
+                row["id"],
+            ),
+        )
+
+
+def _refresh_server_row(row: Any) -> None:
+    target = _server_target(row)
+    ssh_ok, _ssh_err = test_ssh_auth(target)
+    if not ssh_ok:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE servers SET status='offline', last_seen=? WHERE id=?",
+                (db._now(), row["id"]),
+            )
+        return
+
+    probe = probe_server(target)
+    runtime: str | None = None
+    try:
+        setup = ensure_host_ready(RemoteRunner(target))
+        runtime = setup.get("runtime")
+    except Exception:
+        pass
+    if runtime:
+        probe["status"] = "online"
+        probe["podmanVersion"] = runtime
+    _apply_server_probe(row, probe, runtime=runtime)
+
+
+def _recheck_offline_servers_loop() -> None:
+    time.sleep(8)
+    while True:
+        try:
+            with connect() as conn:
+                rows = [
+                    r
+                    for r in _remote_server_rows(conn)
+                    if r["status"] in ("offline", "error")
+                ]
+            for row in rows:
+                try:
+                    _refresh_server_row(row)
+                except Exception:
+                    log.debug("offline recheck failed for %s", row["host"], exc_info=True)
+                time.sleep(1.5)
+        except Exception:
+            log.debug("offline recheck loop failed", exc_info=True)
+        time.sleep(30)
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -292,6 +354,11 @@ def startup() -> None:
     metrics_cache.start(_load_remote_server_rows)
     threading.Thread(target=metrics_cache.refresh, daemon=True, name="hoplyra-metrics-initial").start()
     threading.Thread(target=_backfill_locations, daemon=True, name="hoplyra-geo-backfill").start()
+    threading.Thread(
+        target=_recheck_offline_servers_loop,
+        daemon=True,
+        name="hoplyra-offline-recheck",
+    ).start()
 
 
 @app.on_event("shutdown")
@@ -679,11 +746,8 @@ def ping_server(server_id: str) -> dict[str, Any]:
         result["statusMessage"] = str(exc)[:500]
         return result
 
+    _apply_server_probe(row, probe, runtime=probe.get("podmanVersion"))
     with connect() as conn:
-        conn.execute(
-            "UPDATE servers SET status=?, latency_ms=?, last_seen=?, os=COALESCE(?, os) WHERE id=?",
-            (probe["status"], probe.get("latencyMs"), probe.get("lastSeen"), probe.get("os"), server_id),
-        )
         updated = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
     result = _server_response(updated)
     if probe.get("message"):
@@ -1277,13 +1341,21 @@ def _mount_frontend(app: FastAPI) -> None:
         app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
 
     @app.get("/{spa_path:path}", include_in_schema=False)
+    @app.head("/{spa_path:path}", include_in_schema=False)
     def spa_fallback(spa_path: str) -> FileResponse:
         if spa_path.startswith("api"):
             raise HTTPException(404)
         candidate = dist / spa_path
         if spa_path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(dist / "index.html")
+        return FileResponse(
+            dist / "index.html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
 
 _mount_frontend(app)

@@ -22,4 +22,7 @@ def configure_logging() -> str:
     ):
         logging.getLogger(name).setLevel(level)
 
+    logging.getLogger("paramiko").setLevel(logging.CRITICAL)
+    logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
+
     return level_name

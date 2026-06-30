@@ -48,8 +48,8 @@ Run:
   ./${ARTIFACT}
 
 Requirements:
-  - 64-bit Linux (glibc-based: Ubuntu, Debian, Fedora, Alt, etc.)
-  - libfuse.so.2 (package: fuse / libfuse2) on some distros
+  - 64-bit Linux with glibc 2.35+ (Ubuntu 22.04+, Debian 12+, Fedora 36+, etc.)
+  - libfuse.so.2 (package: libfuse2) on Ubuntu 22.04/24.04
   - If FUSE is unavailable: ./${ARTIFACT} --appimage-extract-and-run
 
 SHA256: ${SHA256}
