@@ -9,7 +9,9 @@ hoplyra.db
 *.db
 .pytest_cache/
 tests/
-/scripts/
+/scripts/*
+!/scripts/bootstrap-env.sh
+!/scripts/generate-ssl.sh
 assets/preview/
 /build/
 /dist/

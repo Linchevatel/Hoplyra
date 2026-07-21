@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from hoplyra.container_images import ensure_image
 from hoplyra.remote import RemoteRunner, wait_for_remote_file
@@ -141,7 +142,7 @@ def wait_for_tun_interface(runner: RemoteRunner, *, timeout_sec: int = 180) -> s
             "pgrep -a openvpn 2>/dev/null | head -3; "
             "ss -tln 2>/dev/null | grep ':9050 ' || true"
         )
-        runner.run("sleep 2")
+        time.sleep(2)
     raise RuntimeError(
         "OpenVPN chain tunnel did not come up in time"
         + (f" (last: {last_diag.strip()[:300]})" if last_diag.strip() else "")
@@ -161,7 +162,7 @@ def wait_for_container(runner: RemoteRunner, name: str, timeout_sec: int = 120) 
             code, _, _ = runner.run(f"podman exec {name} true 2>/dev/null")
             if code == 0:
                 return
-        runner.run("sleep 2")
+        time.sleep(2)
     raise RuntimeError(f"container {name} not ready on {runner.target.host}")
 
 
@@ -211,7 +212,7 @@ def ensure_openvpn_port_free(runner: RemoteRunner, port: int = 1194, *, chain_ta
             "podman ps -a --format '{{.Names}}' 2>/dev/null | "
             "grep -E 'cv-ovpn' | xargs -r podman rm -f 2>/dev/null || true"
         )
-        runner.run("sleep 2")
+        time.sleep(2)
 
 
 def provision_openvpn_instance(

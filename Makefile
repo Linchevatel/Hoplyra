@@ -1,4 +1,4 @@
-.PHONY: install build-images dev stop status
+.PHONY: install build-images dev stop status ssl-cert
 
 install:
 	python3 -m venv .venv
@@ -13,6 +13,11 @@ install:
 	@echo "  Пароль:   admin"
 	@echo "  Смените пароль в разделе «Настройки» после первого входа."
 	@echo ""
+
+ssl-cert:
+	@chmod +x scripts/generate-ssl.sh
+	./scripts/generate-ssl.sh
+
 
 build-images:
 	@command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 || \

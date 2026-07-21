@@ -68,6 +68,12 @@ from hoplyra.awg_runtime import (
     upgrade_awg_on_host,
 )
 
+ssl_enabled = bool(
+    (os.environ.get("HOPLYRA_SSL_CERTFILE") and os.environ.get("HOPLYRA_SSL_KEYFILE"))
+    or (os.environ.get("SSL_CERTFILE") and os.environ.get("SSL_KEYFILE"))
+    or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
+)
+
 app = FastAPI(title="Hoplyra API", version="1.3.2")
 log = logging.getLogger("hoplyra")
 
@@ -84,8 +90,9 @@ app.add_middleware(
     secret_key=session_secret_key(),
     max_age=60 * 60 * 24 * 7,
     same_site="lax",
-    https_only=False,
+    https_only=ssl_enabled,
 )
+
 
 SINGLE_PROTOCOLS = frozenset(DEPLOYERS.keys())
 

@@ -58,7 +58,11 @@ print_links() {
     display_host="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     [[ -n "$display_host" ]] || display_host="127.0.0.1"
   fi
-  local base="http://${display_host}:${PORT}"
+  local scheme="http"
+  if [[ -n "${HOPLYRA_SSL_CERTFILE:-${SSL_CERTFILE:-}}" && -n "${HOPLYRA_SSL_KEYFILE:-${SSL_KEYFILE:-}}" ]]; then
+    scheme="https"
+  fi
+  local base="${scheme}://${display_host}:${PORT}"
   echo ""
   echo "Hoplyra запущен."
   echo "  Дашборд:  ${base}/"
@@ -71,9 +75,15 @@ print_links() {
 }
 
 wait_health() {
+  local scheme="http"
+  local curl_opts=("-sf")
+  if [[ -n "${HOPLYRA_SSL_CERTFILE:-${SSL_CERTFILE:-}}" && -n "${HOPLYRA_SSL_KEYFILE:-${SSL_KEYFILE:-}}" ]]; then
+    scheme="https"
+    curl_opts+=("-k")
+  fi
   local i
   for i in $(seq 1 40); do
-    if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+    if curl "${curl_opts[@]}" "${scheme}://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25

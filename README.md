@@ -20,9 +20,11 @@ Product site and install guide: **[hoplyra.com](https://hoplyra.com)**
 
 The dashboard is protected by a **local administrator account** (not a cloud signup).
 
-- After `make install`, sign in at **http://YOUR_SERVER_IP:8787** with **`admin` / `admin`**
+- After `make install`, sign in at **http://YOUR_SERVER_IP:8787** (or **https://** if SSL certs are configured) with **`admin` / `admin`**
 - Change the password in **Settings** on first use
-- Sessions use HTTP-only cookies; SSH passwords for VPS are stored encrypted in the local SQLite database
+- Sessions use HTTP-only cookies (with Secure flag on HTTPS); SSH passwords for VPS are stored encrypted in the local SQLite database
+- HTTPS can be enabled natively via `HOPLYRA_SSL_CERTFILE` & `HOPLYRA_SSL_KEYFILE` in `.env`, or via Nginx/Caddy reverse proxy.
+
 
 ## Chains
 

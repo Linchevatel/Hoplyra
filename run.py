@@ -16,6 +16,13 @@ PORT = int(os.environ.get("HOPLYRA_PORT", "8787"))
 DESKTOP = os.environ.get("HOPLYRA_DESKTOP", "").strip().lower() in {"1", "true", "yes"}
 
 
+SSL_CERTFILE = os.environ.get("HOPLYRA_SSL_CERTFILE") or os.environ.get("SSL_CERTFILE")
+SSL_KEYFILE = os.environ.get("HOPLYRA_SSL_KEYFILE") or os.environ.get("SSL_KEYFILE")
+SSL_KEY_PASSWORD = os.environ.get("HOPLYRA_SSL_KEY_PASSWORD") or os.environ.get("SSL_KEY_PASSWORD")
+IS_SSL = bool(SSL_CERTFILE and SSL_KEYFILE)
+SCHEME = "https" if IS_SSL else "http"
+
+
 def _display_host(bind_host: str) -> str:
     if bind_host not in ("0.0.0.0", "::"):
         return bind_host
@@ -33,18 +40,26 @@ def _display_host(bind_host: str) -> str:
 
 if __name__ == "__main__":
     if not DESKTOP:
-        url = f"http://{_display_host(HOST)}:{PORT}"
+        url = f"{SCHEME}://{_display_host(HOST)}:{PORT}"
         ui = _frontend_dist()
         print(f"Hoplyra API: {url}/api/health")
         if ui:
             print(f"Dashboard:   {url}/")
         else:
             print("Dashboard:   not bundled (API only)")
-    uvicorn.run(
-        "hoplyra.main:app",
-        host=HOST,
-        port=PORT,
-        reload=False,
-        log_level=log_level,
-        access_log=not DESKTOP,
-    )
+
+    uvicorn_kwargs: dict[str, object] = {
+        "host": HOST,
+        "port": PORT,
+        "reload": False,
+        "log_level": log_level,
+        "access_log": not DESKTOP,
+    }
+    if IS_SSL:
+        uvicorn_kwargs["ssl_certfile"] = SSL_CERTFILE
+        uvicorn_kwargs["ssl_keyfile"] = SSL_KEYFILE
+        if SSL_KEY_PASSWORD:
+            uvicorn_kwargs["ssl_keyfile_password"] = SSL_KEY_PASSWORD
+
+    uvicorn.run("hoplyra.main:app", **uvicorn_kwargs)
+

@@ -497,5 +497,5 @@ def wait_for_remote_file(runner: RemoteRunner, path: str, attempts: int = 36, de
         code, out, _ = runner.run(f"test -f {path_q} && echo yes")
         if code == 0 and "yes" in out:
             return True
-        runner.run(f"sleep {delay_sec}")
+        time.sleep(delay_sec)
     return False
