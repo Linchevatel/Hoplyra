@@ -5,10 +5,11 @@ Portable desktop builds — local control plane with embedded dashboard.
 ## Release files
 
 ```
-desktop/dist/Hoplyra-1.3.2-x86_64.AppImage
-desktop/dist/Hoplyra-1.3.2-x64-portable.exe
-desktop/dist/SHA256SUMS
-desktop/dist/README.txt
+GitHub Releases (v1.3.3):
+Hoplyra-1.3.3-x86_64.AppImage
+Hoplyra-1.3.3-x64-portable.exe
+SHA256SUMS
+README.txt
 ```
 
 ## Build Linux AppImage
@@ -23,7 +24,7 @@ npm run build
 
 ## Build Windows portable
 
-GitHub Actions in the private `Hoplyra-desktop` repo, or locally on Windows:
+GitHub Actions in `.github/workflows/release-desktop.yml`, or locally on Windows:
 
 ```powershell
 cd desktop
@@ -37,33 +38,25 @@ Requires **glibc 2.35+** (Ubuntu 22.04+, Debian 12+, Fedora 36+).
 
 ```bash
 sudo apt install libfuse2   # Ubuntu/Debian
-chmod +x Hoplyra-1.3.2-x86_64.AppImage
-./Hoplyra-1.3.2-x86_64.AppImage
+chmod +x Hoplyra-1.3.3-x86_64.AppImage
+./Hoplyra-1.3.3-x86_64.AppImage
 ```
 
 If AppImage does not start (missing FUSE):
 
 ```bash
-./Hoplyra-1.3.2-x86_64.AppImage --appimage-extract-and-run
+./Hoplyra-1.3.3-x86_64.AppImage --appimage-extract-and-run
 ```
 
 ## Run on Windows
 
-Double-click `Hoplyra-1.3.2-x64-portable.exe`.
+Double-click `Hoplyra-1.3.3-x64-portable.exe`.
 
 Data directory: `%APPDATA%\hoplyra-desktop\hoplyra-data\`
 
-## Commit to git
+## Automated Releases
 
-Track only the release folder contents (Git LFS for AppImage and exe):
-
-```
-dist/Hoplyra-*-x86_64.AppImage
-dist/Hoplyra-*-x64-portable.exe
-dist/SHA256SUMS
-dist/README.txt
-build/icons/
-```
+Releases are generated automatically via GitHub Actions workflow (`.github/workflows/release-desktop.yml`) on git tags (`v*`).
 
 ## Dev (from source)
 
