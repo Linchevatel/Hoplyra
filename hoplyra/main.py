@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -74,7 +75,25 @@ ssl_enabled = bool(
     or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
 )
 
-app = FastAPI(title="Hoplyra API", version="1.3.3")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    schedule_recover_stuck_deploying()
+    warn_if_insecure()
+    metrics_cache.start(_load_remote_server_rows)
+    threading.Thread(target=metrics_cache.refresh, daemon=True, name="hoplyra-metrics-initial").start()
+    threading.Thread(target=_backfill_locations, daemon=True, name="hoplyra-geo-backfill").start()
+    threading.Thread(
+        target=_recheck_offline_servers_loop,
+        daemon=True,
+        name="hoplyra-offline-recheck",
+    ).start()
+    yield
+    wait_for_deploy_jobs(timeout=120)
+    metrics_cache.stop()
+
+
+app = FastAPI(title="Hoplyra API", version="1.3.4", lifespan=lifespan)
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -133,6 +152,7 @@ class DeployRequest(BaseModel):
     protocol: str
     transport: str | None = None
     xrayBypass: bool = False
+    awgVersion: str | None = "awg2.0"
 
 
 def _normalize_auth(body: ServerCreate) -> ServerTarget:
@@ -353,25 +373,6 @@ def _recheck_offline_servers_loop() -> None:
         time.sleep(30)
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-    schedule_recover_stuck_deploying()
-    warn_if_insecure()
-    metrics_cache.start(_load_remote_server_rows)
-    threading.Thread(target=metrics_cache.refresh, daemon=True, name="hoplyra-metrics-initial").start()
-    threading.Thread(target=_backfill_locations, daemon=True, name="hoplyra-geo-backfill").start()
-    threading.Thread(
-        target=_recheck_offline_servers_loop,
-        daemon=True,
-        name="hoplyra-offline-recheck",
-    ).start()
-
-
-@app.on_event("shutdown")
-def shutdown() -> None:
-    wait_for_deploy_jobs(timeout=120)
-    metrics_cache.stop()
 
 
 @app.get("/api/health")
@@ -563,6 +564,16 @@ def create_server(body: ServerCreate) -> dict[str, Any]:
     location = body.location or lookup_location(target.host)
 
     with connect() as conn:
+        existing = conn.execute(
+            "SELECT id, name FROM servers WHERE host = ? AND port = ?",
+            (target.host, target.port),
+        ).fetchone()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Сервер с IP-адресом {target.host}:{target.port} уже добавлен ('{existing['name']}').",
+            )
+
         conn.execute(
             """
             INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret,
@@ -598,6 +609,7 @@ def create_server(body: ServerCreate) -> dict[str, Any]:
         notes=body.notes,
     )
 
+    metrics_cache.refresh()
     result = _server_response(row)
     result["statusMessage"] = "Подготовка VPS: установка Podman/Docker"
     return result
@@ -666,24 +678,25 @@ def prepare_server(server_id: str) -> dict[str, Any]:
 
 @app.delete("/api/servers/{server_id}")
 def delete_server(server_id: str) -> dict[str, bool]:
-    _get_server_row(server_id)
+    row = _get_server_row(server_id)
     with connect() as conn:
         configs = _configs_referencing_server(conn, server_id)
-        blocking = [c for c in configs if c["status"] in ("active", "deploying")]
-        if blocking:
-            raise HTTPException(
-                409,
-                "На сервере есть активные VPN или цепи. Сначала остановите и удалите конфигурации.",
-            )
-        inactive = [c for c in configs if c["status"] not in ("active", "deploying")]
         config_ids = [c["id"] for c in configs]
-    _purge_configs_on_server(inactive)
+    if row["status"] == "online":
+        import threading
+        threading.Thread(
+            target=_purge_configs_on_server,
+            args=(configs,),
+            daemon=True,
+            name=f"hoplyra-purge-{server_id[:8]}"
+        ).start()
     with connect() as conn:
         for cid in config_ids:
             conn.execute("DELETE FROM configs WHERE id = ?", (cid,))
         cur = conn.execute("DELETE FROM servers WHERE id = ?", (server_id,))
     if cur.rowcount == 0:
         raise HTTPException(404, "Server not found")
+    metrics_cache.refresh()
     return {"ok": True}
 
 
@@ -778,6 +791,7 @@ class ChainHopRequest(BaseModel):
     serverId: str
     transport: str | None = None
     xrayBypass: bool = False
+    awgVersion: str | None = "awg2.0"
 
 
 class DeployChainRequest(BaseModel):
@@ -798,6 +812,8 @@ def _hop_payload(hops: list[ChainHopRequest]) -> list[dict[str, Any]]:
             hop["transport"] = h.transport
         if h.protocol == "xray" and h.xrayBypass:
             hop["xrayBypass"] = True
+        if h.protocol == "awg" and h.awgVersion:
+            hop["awgVersion"] = h.awgVersion
         out.append(hop)
     return out
 
@@ -952,11 +968,13 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
         protocol=protocol,
         transport=transport,
         xray_bypass=body.xrayBypass,
+        awg_version=body.awgVersion or "awg2.0",
         host=row["host"],
         target=target,
         get_server_row=_get_server_row,
         server_target=_server_target,
     )
+
     return row_to_config(cfg_row)
 
 

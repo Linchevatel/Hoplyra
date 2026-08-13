@@ -198,7 +198,14 @@ def ensure_host_ready(
 
     prog(15, "Проверка Podman/Docker на VPS…")
 
+    if not force:
+        code, out, _ = runner.run(f"test -f {SETUP_MARKER} && echo ok", timeout=10)
+        if code == 0 and "ok" in out:
+            prog(100, "Сервер готов")
+            return {"prepared": True, "message": "already ready", "runtime": "podman/docker"}
+
     if not force and container_runtime_ready(runner):
+
         prog(55, "Контейнерный runtime найден, настройка каталогов…")
         runner.run(
             "mkdir -p /opt/hoplyra/instances && "

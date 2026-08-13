@@ -67,17 +67,9 @@ def ensure_image(
     files: list[str] | None = None,
     verify_entrypoint_contains: str | None = None,
 ) -> None:
-    if verify_entrypoint_contains and _remote_has_image(runner, image):
-        code, out, _ = runner.run(
-            f"podman run --rm --entrypoint grep {image} /opt/hoplyra/start.sh "
-            f"-F {verify_entrypoint_contains} 2>/dev/null || true",
-            timeout=90,
-        )
-        if verify_entrypoint_contains not in out:
-            runner.run(f"podman rmi -f {image} 2>/dev/null || true")
-
     if _remote_has_image(runner, image):
         return
+
 
     archive = cache_archive(image)
     if archive.is_file():

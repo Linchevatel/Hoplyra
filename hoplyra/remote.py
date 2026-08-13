@@ -90,21 +90,27 @@ def _open_tcp_socket(host: str, port: int, *, timeout: float) -> socket.socket:
 
 
 def _connect_kwargs(target: ServerTarget) -> dict:
-    if not target.auth_secret:
-        raise ValueError("SSH password is required")
-
     connect_timeout, banner_timeout, auth_timeout = _ssh_timeouts()
-    return {
+    kwargs: dict = {
         "hostname": target.host,
         "port": target.port,
         "username": target.username,
         "timeout": connect_timeout,
         "banner_timeout": banner_timeout,
         "auth_timeout": auth_timeout,
-        "auth_strategy": _PasswordOnlyAuth(target.username, target.auth_secret),
-        "allow_agent": False,
-        "look_for_keys": False,
     }
+    if target.auth_secret and target.auth_type != "key":
+        kwargs["auth_strategy"] = _PasswordOnlyAuth(target.username, target.auth_secret)
+        kwargs["allow_agent"] = False
+        kwargs["look_for_keys"] = False
+    elif target.auth_secret and target.auth_type == "key" and os.path.exists(target.auth_secret):
+        kwargs["key_filename"] = target.auth_secret
+        kwargs["allow_agent"] = True
+        kwargs["look_for_keys"] = True
+    else:
+        kwargs["allow_agent"] = True
+        kwargs["look_for_keys"] = True
+    return kwargs
 
 
 def _friendly_ssh_error(exc: Exception, *, username: str = "root", host: str = "") -> str:
@@ -151,32 +157,33 @@ def _sshpass_available() -> bool:
 
 
 def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tuple[int, str, str]:
-    if not target.auth_secret:
-        raise ValueError("SSH password is required")
+    ssh_args = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        f"ConnectTimeout={min(max(timeout, 5), 30)}",
+        "-p",
+        str(target.port),
+    ]
+    if target.auth_type == "key" and target.auth_secret and os.path.exists(target.auth_secret):
+        ssh_args.extend(["-i", target.auth_secret])
+
+    if target.auth_secret and target.auth_type != "key":
+        cmd_list = ["sshpass", "-p", target.auth_secret] + ssh_args + [f"{target.username}@{target.host}", command]
+    else:
+        cmd_list = ssh_args + ["-o", "BatchMode=yes", f"{target.username}@{target.host}", command]
+
     proc = subprocess.run(
-        [
-            "sshpass",
-            "-p",
-            target.auth_secret,
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            f"ConnectTimeout={min(max(timeout, 5), 30)}",
-            "-p",
-            str(target.port),
-            f"{target.username}@{target.host}",
-            command,
-        ],
+        cmd_list,
         capture_output=True,
         text=True,
         timeout=timeout,
     )
     return proc.returncode, proc.stdout, proc.stderr
+
 
 
 @contextmanager

@@ -5,16 +5,18 @@ import secrets
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from hoplyra.db import DATA_DIR
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_down, podman_compose_up
+from hoplyra.container_images import _remote_has_image
 from hoplyra.wg_keys import generate_wg_keypair, generate_wg_psk
 from hoplyra.wg_runtime import compose_wg_service, ensure_wg_image
 from hoplyra.xray_bypass import format_bypass_client_bundle
 from hoplyra.xray_runtime import XRAY_MOUNT, compose_xray_service, ensure_xray_image, tls_cert_paths
 from hoplyra.awg_runtime import awg_quick_down, awg_quick_up, ensure_awg_on_host
-from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg2_params
+from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg_params, generate_awg2_params
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
 from hoplyra.openvpn_runtime import (
     build_client_ovpn,
@@ -41,12 +43,14 @@ class DeployResult:
     client_config: str
     container_name: str
     instance_path: str
-    meta: dict[str, Any]
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class ProtocolDeployer(ABC):
-    protocol: str
-    listen_port: int
+    protocol: str = ""
+
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        raise NotImplementedError
 
     def compose_project(self, config_id: str) -> str:
         return f"cv-{self.protocol}-{config_id[:8]}"
@@ -54,16 +58,12 @@ class ProtocolDeployer(ABC):
     def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
         podman_compose_down(runner, instance_path, self.compose_project(config_id))
 
-    @abstractmethod
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
-        ...
-
 
 class WireGuardDeployer(ProtocolDeployer):
     protocol = "wg"
     listen_port = 51820
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
         client_ip = "10.66.66.2"
@@ -92,6 +92,7 @@ Endpoint = {server_host}:{self.listen_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
+
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-wg-{config_id[:8]}"
         conf_path = f"{path}/wg0.conf"
@@ -113,12 +114,12 @@ class AmneziaWGDeployer(ProtocolDeployer):
     protocol = "awg"
     listen_port = 55424
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, awg_version: str = "awg2.0", **kwargs: Any) -> DeployResult:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
         client_ip = "10.9.1.2"
         subnet = "10.9.1.0/24"
-        awg = generate_awg2_params()
+        awg = generate_awg_params(version=awg_version)
         psk = generate_wg_psk()
 
         awg_conf = build_awg_server_conf(
@@ -313,10 +314,180 @@ class XrayDeployer(ProtocolDeployer):
         )
 
 
+HY2_IMAGE = "docker.io/teddysun/hysteria:latest"
+
+
+def ensure_hy2_image(runner: RemoteRunner) -> None:
+    """Pull Hysteria 2 image only if not already present on the remote host."""
+    if _remote_has_image(runner, HY2_IMAGE):
+        return
+    code, _, err = runner.run(f"podman pull {HY2_IMAGE}", timeout=600)
+    if code != 0:
+        raise RuntimeError(f"Failed to pull {HY2_IMAGE}: {err[:300]}")
+
+
+class Hysteria2Deployer(ProtocolDeployer):
+    protocol = "hysteria2"
+    listen_port = 443
+
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+        path = _instance_dir(config_id, runner.target.is_local)
+        container = f"cv-hy2-{config_id[:8]}"
+        password = secrets.token_urlsafe(16)
+        obfs_password = secrets.token_urlsafe(16)
+
+        mkdir_remote(runner, path)
+        runner.run(
+            f"openssl req -x509 -newkey rsa:2048 -nodes "
+            f"-keyout {path}/key.pem -out {path}/cert.pem -days 365 "
+            f"-subj '/CN=bing.com' -addext 'subjectAltName=DNS:bing.com'"
+        )
+
+        config_yaml = f"""listen: :{self.listen_port}
+tls:
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
+obfs:
+  type: salamander
+  salamander:
+    password: {obfs_password}
+auth:
+  type: password
+  password: {password}
+ignoreClientBandwidth: true
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com
+    rewriteHost: true
+"""
+        runner.upload_text(f"{path}/config.yaml", config_yaml)
+
+        ensure_hy2_image(runner)
+
+        compose = f"""services:
+  hy2:
+    image: {HY2_IMAGE}
+    container_name: {container}
+    network_mode: host
+    command: ["hysteria", "server", "-c", "/etc/hysteria/config.yaml"]
+    volumes:
+      - {path}:/etc/hysteria
+    restart: unless-stopped
+"""
+        runner.upload_text(f"{path}/docker-compose.yml", compose)
+        podman_compose_up(runner, path, self.compose_project(config_id))
+
+        runner.run(
+            "iptables -t nat -A PREROUTING -p udp --dport 20000:50000 -j REDIRECT --to-ports 443 2>/dev/null || true"
+        )
+
+        hy2_uri = (
+            f"hysteria2://{password}@{server_host}:{self.listen_port}"
+            f"?mport=20000-50000,443&obfs=salamander&obfs-password={obfs_password}&insecure=1&sni=bing.com"
+            f"#Hoplyra-{config_id[:8]}"
+        )
+
+        return DeployResult(
+            client_config=f"{hy2_uri}\n",
+            container_name=container,
+            instance_path=path,
+            meta={"password": password, "hy2Uri": hy2_uri, "listenPort": self.listen_port},
+        )
+
+
+SINGBOX_IMAGE = "ghcr.io/sagernet/sing-box:latest"
+
+
+def ensure_singbox_image(runner: RemoteRunner) -> None:
+    """Pull sing-box image only if not already present on the remote host."""
+    if _remote_has_image(runner, SINGBOX_IMAGE):
+        return
+    code, _, err = runner.run(f"podman pull {SINGBOX_IMAGE}", timeout=600)
+    if code != 0:
+        raise RuntimeError(f"Failed to pull {SINGBOX_IMAGE}: {err[:300]}")
+
+
+class TuicDeployer(ProtocolDeployer):
+    protocol = "tuic"
+    listen_port = 8448
+
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+        path = _instance_dir(config_id, runner.target.is_local)
+        container = f"cv-tuic-{config_id[:8]}"
+        tuic_uuid = str(uuid.uuid4())
+        tuic_pass = secrets.token_urlsafe(16)
+
+        mkdir_remote(runner, path)
+
+        # Generate self-signed TLS cert with SAN (required by modern Go/TLS)
+        runner.run(
+            f"openssl req -x509 -newkey rsa:2048 -nodes "
+            f"-keyout {path}/key.pem -out {path}/cert.pem -days 365 "
+            f"-subj '/CN=bing.com' -addext 'subjectAltName=DNS:bing.com'"
+        )
+
+        singbox_config = {
+            "log": {"level": "warn"},
+            "inbounds": [
+                {
+                    "type": "tuic",
+                    "tag": "tuic-in",
+                    "listen": "::",
+                    "listen_port": self.listen_port,
+                    "users": [{"uuid": tuic_uuid, "password": tuic_pass}],
+                    "congestion_control": "bbr",
+                    "tls": {
+                        "enabled": True,
+                        "alpn": ["h3"],
+                        "certificate_path": "/etc/tuic/cert.pem",
+                        "key_path": "/etc/tuic/key.pem",
+                    },
+                }
+            ],
+            "outbounds": [{"type": "direct", "tag": "direct"}],
+        }
+
+        tuic_uri = (
+            f"tuic://{tuic_uuid}:{tuic_pass}@{server_host}:{self.listen_port}"
+            f"?congestion_control=bbr&alpn=h3&sni=bing.com&insecure=1"
+            f"#Hoplyra-{config_id[:8]}"
+        )
+
+        runner.upload_text(f"{path}/config.json", json.dumps(singbox_config, indent=2))
+
+        ensure_singbox_image(runner)
+
+        compose = f"""services:
+  tuic:
+    image: {SINGBOX_IMAGE}
+    container_name: {container}
+    network_mode: host
+    command: ["run", "-c", "/etc/tuic/config.json"]
+    volumes:
+      - {path}:/etc/tuic
+    restart: unless-stopped
+"""
+        runner.upload_text(f"{path}/docker-compose.yml", compose)
+        podman_compose_up(runner, path, self.compose_project(config_id))
+
+        return DeployResult(
+            client_config=f"{tuic_uri}\n",
+            container_name=container,
+            instance_path=path,
+            meta={"tuicUuid": tuic_uuid, "password": tuic_pass, "tuicUri": tuic_uri, "listenPort": self.listen_port},
+        )
+
+
+
+
+
 DEPLOYERS: dict[str, ProtocolDeployer] = {
     "wg": WireGuardDeployer(),
     "awg": AmneziaWGDeployer(),
     "xray": XrayDeployer(),
+    "hysteria2": Hysteria2Deployer(),
+    "tuic": TuicDeployer(),
 }
 
 

@@ -310,15 +310,6 @@ def metrics_for_target(
 ) -> dict[str, Any]:
     fresh_latency = measure_tcp_latency(host, runner.target.port)
     display_latency = fresh_latency if fresh_latency is not None else latency_ms
-    if fresh_latency is not None and fresh_latency != latency_ms:
-        try:
-            with db.connect() as conn:
-                conn.execute(
-                    "UPDATE servers SET latency_ms=? WHERE id=?",
-                    (fresh_latency, server_id),
-                )
-        except Exception:
-            pass
 
     base: dict[str, Any] = {
         "serverId": server_id,
@@ -348,16 +339,48 @@ def metrics_for_target(
         base["error"] = "VPS is still preparing"
         return base
 
-    base["online"] = True
+    if fresh_latency is None:
+        # Host TCP port is unreachable -> Mark offline in DB
+        try:
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE servers SET status='offline', latency_ms=NULL WHERE id=? AND status != 'connecting'",
+                    (server_id,),
+                )
+        except Exception:
+            pass
+        base["online"] = False
+        base["error"] = "TCP connection refused or timed out"
+        return base
+
     try:
         metrics = collect_server_metrics(runner)
+        now_str = datetime.now(timezone.utc).isoformat()
+        try:
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE servers SET status='online', latency_ms=?, last_seen=? WHERE id=? AND status != 'connecting'",
+                    (fresh_latency, now_str, server_id),
+                )
+        except Exception:
+            pass
         base.update(metrics)
+        base["online"] = True
         base["serverId"] = server_id
         base["name"] = name
         base["host"] = host
-        base["latencyMs"] = fresh_latency if fresh_latency is not None else latency_ms
+        base["latencyMs"] = fresh_latency
         return base
     except Exception as exc:
+        try:
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE servers SET status='offline', latency_ms=? WHERE id=? AND status != 'connecting'",
+                    (fresh_latency, server_id),
+                )
+        except Exception:
+            pass
+        base["online"] = False
         base["error"] = str(exc)[:500]
         return base
 

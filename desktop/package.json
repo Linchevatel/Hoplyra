@@ -1,6 +1,6 @@
 {
   "name": "hoplyra-desktop",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "description": "Hoplyra desktop app — local control plane with embedded dashboard",
   "homepage": "https://hoplyra.com",

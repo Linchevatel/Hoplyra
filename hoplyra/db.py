@@ -66,9 +66,40 @@ def init_db() -> None:
             """
         )
     migrate_auth_secrets()
+    deduplicate_servers()
     from hoplyra.panel_auth import ensure_default_admin
 
     ensure_default_admin()
+
+
+def deduplicate_servers() -> None:
+    with connect() as conn:
+        dups = conn.execute(
+            """
+            SELECT host, port, COUNT(*) as cnt
+            FROM servers
+            WHERE host NOT IN ('127.0.0.1', 'localhost', '::1')
+            GROUP BY host, port
+            HAVING cnt > 1
+            """
+        ).fetchall()
+        for d in dups:
+            host, port = d["host"], d["port"]
+            rows = conn.execute(
+                "SELECT id FROM servers WHERE host = ? AND port = ? ORDER BY created_at DESC",
+                (host, port),
+            ).fetchall()
+            if len(rows) <= 1:
+                continue
+            keep_id = rows[0]["id"]
+            dup_ids = [r["id"] for r in rows[1:]]
+            for dup_id in dup_ids:
+                conn.execute(
+                    "UPDATE OR IGNORE configs SET server_id = ? WHERE server_id = ?",
+                    (keep_id, dup_id),
+                )
+                conn.execute("DELETE FROM servers WHERE id = ?", (dup_id,))
+
 
 
 def migrate_auth_secrets() -> None:

@@ -13,6 +13,7 @@ class HopSpec:
     index: int
     transport: str | None = None
     xray_bypass: bool = False
+    awg_version: str = "awg2.0"
 
 
 @dataclass
@@ -59,9 +60,11 @@ def build_plan(hops: list[dict[str, Any]], server_hosts: dict[str, str]) -> Chai
             index=i,
             transport=h.get("transport"),
             xray_bypass=bool(h.get("xrayBypass")),
+            awg_version=h.get("awgVersion") or h.get("awg_version") or "awg2.0",
         )
         for i, h in enumerate(hops)
     ]
+
     entry_id = specs[0].server_id
     exit_id = specs[-1].server_id
     seen: set[str] = set()

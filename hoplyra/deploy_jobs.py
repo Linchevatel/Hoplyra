@@ -253,6 +253,7 @@ def run_single_deploy_job(
     protocol: str,
     transport: str | None,
     xray_bypass: bool,
+    awg_version: str = "awg2.0",
     host: str,
     target: ServerTarget,
     get_server_row: Callable[[str], Any],
@@ -262,7 +263,7 @@ def run_single_deploy_job(
         try:
             deployer = get_deployer(protocol, transport=transport, xray_bypass=xray_bypass)
             runner = RemoteRunner(target)
-            result = deployer.deploy(runner, config_id, host)
+            result = deployer.deploy(runner, config_id, host, awg_version=awg_version)
             with connect() as conn:
                 conn.execute(
                     """
@@ -321,6 +322,7 @@ def start_single_deploy_job(
     protocol: str,
     transport: str | None,
     xray_bypass: bool,
+    awg_version: str = "awg2.0",
     host: str,
     target: ServerTarget,
     get_server_row: Callable[[str], Any],
@@ -335,6 +337,7 @@ def start_single_deploy_job(
             "protocol": protocol,
             "transport": transport,
             "xray_bypass": xray_bypass,
+            "awg_version": awg_version,
             "host": host,
             "target": target,
             "get_server_row": get_server_row,

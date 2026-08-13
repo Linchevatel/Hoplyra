@@ -8,6 +8,8 @@ from hoplyra.chains.planner import validate_chain
 from hoplyra.chains.preflight import check_server_reachable
 from hoplyra.remote import RemoteRunner, ServerTarget, measure_tcp_latency
 
+__test__ = False
+
 
 def _protocol_processing_ms(protocol: str) -> int:
     if protocol == "tor":

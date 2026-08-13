@@ -87,19 +87,23 @@ class AwgObfuscationParams:
             f"Jmax = {self.jmax}",
             f"S1 = {self.s1}",
             f"S2 = {self.s2}",
-            f"S3 = {self.s3}",
-            f"S4 = {self.s4}",
+        ]
+        if self.s3 != 0 or self.s4 != 0:
+            lines.append(f"S3 = {self.s3}")
+            lines.append(f"S4 = {self.s4}")
+        lines.extend([
             f"H1 = {self.h1}",
             f"H2 = {self.h2}",
             f"H3 = {self.h3}",
             f"H4 = {self.h4}",
-        ]
+        ])
         for idx, value in enumerate((self.i1, self.i2, self.i3, self.i4, self.i5), start=1):
             if value.strip():
                 lines.append(f"I{idx} = {value}")
         return "\n".join(lines)
 
     def as_meta(self) -> dict[str, int | str]:
+        ver_str = "awg2.0" if self.i1 else ("awg1.5" if (self.s3 != 0 or "-" in str(self.h1)) else "awg")
         meta: dict[str, int | str] = {
             "jc": self.jc,
             "jmin": self.jmin,
@@ -112,7 +116,7 @@ class AwgObfuscationParams:
             "h2": self.h2,
             "h3": self.h3,
             "h4": self.h4,
-            "awgVersion": 2,
+            "awgVersion": ver_str,
         }
         if self.i1.strip():
             meta["i1"] = self.i1
@@ -140,6 +144,9 @@ class AwgObfuscationParams:
             value = meta.get(key, "")
             return str(value) if value else ""
 
+        ver = str(meta.get("awgVersion", "")).lower()
+        default_i1 = "" if ver in ("awg", "awg1", "awg1.0", "awg1.5") else AWG2_DEFAULT_I1
+
         return cls(
             jc=_int("jc", 5),
             jmin=_int("jmin", 54),
@@ -152,7 +159,7 @@ class AwgObfuscationParams:
             h2=_h("h2", _AWG2_H_RANGES[1]),
             h3=_h("h3", _AWG2_H_RANGES[2]),
             h4=_h("h4", _AWG2_H_RANGES[3]),
-            i1=_opt_str("i1") or AWG2_DEFAULT_I1,
+            i1=_opt_str("i1") or default_i1,
             i2=_opt_str("i2"),
             i3=_opt_str("i3"),
             i4=_opt_str("i4"),
@@ -160,26 +167,49 @@ class AwgObfuscationParams:
         )
 
 
+def generate_awg_params(version: str = "awg2.0") -> AwgObfuscationParams:
+    v = (version or "awg2.0").lower().strip()
+    if v in ("awg", "awg1", "awg1.0", "1.0", "1"):
+        jc = random.randint(4, 6)
+        jmin = 10
+        jmax = 50
+        s1 = random.randint(15, 150)
+        s2 = random.randint(15, 150)
+        s3 = 0
+        s4 = 0
+        h1 = str(random.randint(100000000, 2147483647))
+        h2 = str(random.randint(100000000, 2147483647))
+        h3 = str(random.randint(100000000, 2147483647))
+        h4 = str(random.randint(100000000, 2147483647))
+        return AwgObfuscationParams(
+            jc=jc, jmin=jmin, jmax=jmax, s1=s1, s2=s2, s3=s3, s4=s4,
+            h1=h1, h2=h2, h3=h3, h4=h4, i1=""
+        )
+    elif v in ("awg1.5", "1.5"):
+        jc = random.randint(4, 6)
+        jmin = 10
+        jmax = 50
+        s1, s2, s3, s4 = _rand_awg2_packet_sizes()
+        h1, h2, h3, h4 = _rand_awg2_headers()
+        return AwgObfuscationParams(
+            jc=jc, jmin=jmin, jmax=jmax, s1=s1, s2=s2, s3=s3, s4=s4,
+            h1=h1, h2=h2, h3=h3, h4=h4, i1=""
+        )
+    else:
+        jc = random.randint(4, 6)
+        jmin = 10
+        jmax = 50
+        s1, s2, s3, s4 = _rand_awg2_packet_sizes()
+        h1, h2, h3, h4 = _rand_awg2_headers()
+        return AwgObfuscationParams(
+            jc=jc, jmin=jmin, jmax=jmax, s1=s1, s2=s2, s3=s3, s4=s4,
+            h1=h1, h2=h2, h3=h3, h4=h4, i1=AWG2_DEFAULT_I1
+        )
+
+
 def generate_awg2_params() -> AwgObfuscationParams:
-    jc = random.randint(4, 6)
-    jmin = 10
-    jmax = 50
-    s1, s2, s3, s4 = _rand_awg2_packet_sizes()
-    h1, h2, h3, h4 = _rand_awg2_headers()
-    return AwgObfuscationParams(
-        jc=jc,
-        jmin=jmin,
-        jmax=jmax,
-        s1=s1,
-        s2=s2,
-        s3=s3,
-        s4=s4,
-        h1=h1,
-        h2=h2,
-        h3=h3,
-        h4=h4,
-        i1=AWG2_DEFAULT_I1,
-    )
+    return generate_awg_params("awg2.0")
+
 
 
 DEFAULT_AWG_PARAMS = AwgObfuscationParams()
