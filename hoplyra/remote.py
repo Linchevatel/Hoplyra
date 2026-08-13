@@ -431,14 +431,18 @@ def wan_wg_forward_down_cmd(wg_iface: str = "wg0") -> str:
 def nat_postup(subnet: str, iface_var: str = detect_wan_iface_script()) -> str:
     return (
         f"sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true; "
+        f"sysctl -w net.ipv4.conf.all.rp_filter=0 2>/dev/null || true; "
+        f"sysctl -w net.ipv4.conf.default.rp_filter=0 2>/dev/null || true; "
         f"sysctl -w net.ipv4.conf.%i.rp_filter=0 2>/dev/null || true; "
         f"WAN={iface_var}; "
         f"[ -n \"$WAN\" ] && iptables -t nat -C POSTROUTING -s {subnet} -o \"$WAN\" -j MASQUERADE 2>/dev/null || "
-        f"iptables -t nat -A POSTROUTING -s {subnet} -o \"$WAN\" -j MASQUERADE; "
-        f"iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -j ACCEPT; "
-        f"iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -o %i -j ACCEPT; "
+        f"iptables -t nat -I POSTROUTING 1 -s {subnet} -o \"$WAN\" -j MASQUERADE; "
+        f"iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i %i -j ACCEPT; "
+        f"iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o %i -j ACCEPT; "
         f"[ -n \"$WAN\" ] && iptables -C FORWARD -i \"$WAN\" -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || "
-        f"iptables -A FORWARD -i \"$WAN\" -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+        f"iptables -I FORWARD 1 -i \"$WAN\" -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT; "
+        f"iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || "
+        f"iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
     )
 
 

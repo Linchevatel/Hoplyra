@@ -48,21 +48,45 @@ def build_amnezia_awg_package(
 ) -> dict[str, Any]:
     kv = _parse_kv_conf(client_conf)
     dns_match = re.search(
-        r"DNS\s*=\s*(\d{1,3}(?:\.\d{1,3}){3})\s*,\s*(\d{1,3}(?:\.\d{1,3}){3})",
+        r"DNS\s*=\s*(\d{1,3}(?:\.\d{1,3}){3})(?:\s*,\s*(\d{1,3}(?:\.\d{1,3}){3}))?",
         client_conf,
     )
     dns1 = dns_match.group(1) if dns_match else "1.1.1.1"
-    dns2 = dns_match.group(2) if dns_match else "8.8.8.8"
+    dns2 = dns_match.group(2) if (dns_match and dns_match.group(2)) else "1.0.0.1"
+
+    is_v3 = bool(kv.get("HeaderProtectionKey") or kv.get("ContentPaddingAddition"))
+    container_name = "amnezia-awg"
+    proto_ver = "2"
 
     allowed = kv.get("AllowedIPs", "0.0.0.0/0")
+    allowed_list = [part.strip() for part in allowed.split(",") if part.strip()]
+    client_priv = kv.get("PrivateKey", "")
+    client_ip_val = kv.get("Address", "")
+    server_pub = kv.get("PublicKey", "")
     last_config: dict[str, Any] = {
         "config": client_conf,
         "hostName": host,
         "port": port,
-        "client_priv_key": kv.get("PrivateKey", ""),
-        "client_ip": kv.get("Address", ""),
-        "server_pub_key": kv.get("PublicKey", ""),
-        "allowed_ips": [part.strip() for part in allowed.split(",") if part.strip()],
+        "client_priv_key": client_priv,
+        "clientPrivKey": client_priv,
+        "client_ip": client_ip_val,
+        "clientIp": client_ip_val,
+        "server_pub_key": server_pub,
+        "serverPubKey": server_pub,
+        "allowed_ips": allowed_list,
+        "allowedIps": allowed_list,
+    }
+    int_keys = {"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "jc", "jmin", "jmax", "s1", "s2", "s3", "s4"}
+    camel_map = {
+        "HeaderProtectionKey": "headerProtectionKey",
+        "ContentPaddingAddition": "contentPaddingAddition",
+        "RekeyAfterTime": "rekeyAfterTime",
+        "RekeyTimeout": "rekeyTimeout",
+        "RejectAfterTime": "rejectAfterTime",
+        "KeepaliveTimeout": "keepaliveTimeout",
+        "MaxHandshakeAttempts": "maxHandshakeAttempts",
+        "RandomTrailers": "randomTrailers",
+        "DisableCookies": "disableCookies",
     }
     for key in (
         "Jc",
@@ -81,28 +105,43 @@ def build_amnezia_awg_package(
         "I3",
         "I4",
         "I5",
+        "HeaderProtectionKey",
+        "ContentPaddingAddition",
+        "RekeyAfterTime",
+        "RekeyTimeout",
+        "RejectAfterTime",
+        "KeepaliveTimeout",
+        "MaxHandshakeAttempts",
+        "RandomTrailers",
+        "DisableCookies",
     ):
         if kv.get(key):
-            last_config[key] = str(kv[key])
+            val = kv[key]
+            typed_val = int(val) if (key in int_keys and str(val).isdigit()) else str(val)
+            last_config[key] = typed_val
+            last_config[key.lower()] = typed_val
+            if key in camel_map:
+                last_config[camel_map[key]] = typed_val
     if kv.get("PresharedKey"):
         last_config["psk_key"] = kv["PresharedKey"]
+        last_config["pskKey"] = kv["PresharedKey"]
 
     awg_container = {
         "last_config": json.dumps(last_config, ensure_ascii=False),
-        "isThirdPartyConfig": True,
+        "isThirdPartyConfig": False,
         "port": str(port),
         "transport_proto": "udp",
-        "protocol_version": "2",
+        "protocol_version": proto_ver,
     }
 
     return {
         "containers": [
             {
-                "container": AWG2_CONTAINER,
+                "container": container_name,
                 AWG_PROTOCOL_KEY: awg_container,
             }
         ],
-        "defaultContainer": AWG2_CONTAINER,
+        "defaultContainer": container_name,
         "description": description,
         "dns1": dns1,
         "dns2": dns2,

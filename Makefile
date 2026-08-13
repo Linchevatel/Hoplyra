@@ -5,6 +5,7 @@ install:
 	.venv/bin/pip install -r requirements.txt
 	@chmod +x scripts/bootstrap-env.sh
 	@bash scripts/bootstrap-env.sh
+	@if command -v npm >/dev/null 2>&1 && [ -d "../frontend" ]; then (cd ../frontend && npm install && npm run build) && mkdir -p hoplyra/static && cp -r ../frontend/dist/* hoplyra/static/; else echo "==> npm не найден — используется готовая статика из hoplyra/static"; fi
 	@$(MAKE) build-images
 	@$(MAKE) dev
 	@echo ""

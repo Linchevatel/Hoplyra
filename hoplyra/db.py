@@ -54,8 +54,7 @@ def init_db() -> None:
                 container_name TEXT,
                 instance_path TEXT,
                 meta_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                UNIQUE(server_id, protocol)
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS panel_auth (
@@ -65,11 +64,41 @@ def init_db() -> None:
             );
             """
         )
+        _migrate_configs_unique_constraint(conn)
     migrate_auth_secrets()
     deduplicate_servers()
     from hoplyra.panel_auth import ensure_default_admin
 
     ensure_default_admin()
+
+
+def _migrate_configs_unique_constraint(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='configs'").fetchone()
+    if row and row["sql"] and "UNIQUE(server_id, protocol)" in row["sql"]:
+        conn.execute("ALTER TABLE configs RENAME TO configs_old")
+        conn.execute(
+            """
+            CREATE TABLE configs (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                protocol TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                client_config TEXT,
+                container_name TEXT,
+                instance_path TEXT,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO configs (id, server_id, protocol, status, client_config, container_name, instance_path, meta_json, created_at)
+            SELECT id, server_id, protocol, status, client_config, container_name, instance_path, meta_json, created_at
+            FROM configs_old
+            """
+        )
+        conn.execute("DROP TABLE configs_old")
 
 
 def deduplicate_servers() -> None:
@@ -172,6 +201,25 @@ def row_to_config(row: sqlite3.Row) -> dict[str, Any]:
     proxy = socks_proxy_for_response(meta)
     if proxy:
         result["socksProxy"] = proxy
+    if result.get("protocol") == "awg":
+        awg_params = meta.get("awgParams") or {}
+        awg_ver = meta.get("awgVersion")
+        if not awg_ver and isinstance(awg_params, dict):
+            awg_ver = awg_params.get("awgVersion")
+        if awg_ver:
+            result["awgVersion"] = awg_ver
+        if result.get("clientConfig"):
+            from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
+            match = re.search(r"Endpoint\s*=\s*([^\s:]+):(\d+)", result["clientConfig"])
+            if match:
+                srv_host = match.group(1)
+                srv_port = int(match.group(2))
+                result["amneziaVpnUri"] = build_amnezia_awg_vpn_uri(
+                    result["clientConfig"],
+                    host=srv_host,
+                    port=srv_port,
+                    description=f"Hoplyra {result['id'][:8]}",
+                )
     if result.get("protocol") == "xray" and not result.get("vlessUri") and result.get("clientConfig"):
         match = re.search(r"vless://[^\s]+", result["clientConfig"])
         if match:
