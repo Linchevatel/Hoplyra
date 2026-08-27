@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
     metrics_cache.stop()
 
 
-app = FastAPI(title="Hoplyra API", version="1.3.4", lifespan=lifespan)
+app = FastAPI(title="Hoplyra API", version="1.4.1", lifespan=lifespan)
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -279,6 +279,19 @@ def _assert_active_chain_immutable(cfg: Any) -> None:
             409,
             "Активную цепь нельзя изменять — только удалить. Остановка, перезапуск и repair недоступны.",
         )
+
+
+def _server_has_active_chain(conn: Any, server_id: str) -> bool:
+    for cfg in _configs_referencing_server(conn, server_id):
+        meta_json = cfg["meta_json"] if "meta_json" in cfg.keys() else "{}"
+        try:
+            meta = json.loads(meta_json or "{}") if isinstance(meta_json, str) else (meta_json or {})
+        except Exception:
+            meta = {}
+        hops = meta.get("hops") or []
+        if len(hops) >= 2 and cfg["status"] in ("active", "deploying"):
+            return True
+    return False
 
 
 def _server_has_active_config(conn: Any, server_id: str) -> bool:
@@ -941,18 +954,9 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        if _server_has_active_config(conn, body.serverId):
-            raise HTTPException(409, "Сервер занят активной цепью или VPN — выберите другой VPS")
-        existing = conn.execute(
-            "SELECT id, status FROM configs WHERE server_id = ? AND protocol = ?",
-            (body.serverId, protocol),
-        ).fetchone()
-        if existing and existing["status"] in ("active", "deploying"):
-            cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (existing["id"],)).fetchone()
-            if existing["status"] == "active":
-                log.info("Deploy %s on %s — already active, returning existing config", protocol, row["name"])
-            return row_to_config(cfg_row)
-        _delete_stale_config(conn, body.serverId, protocol)
+        if _server_has_active_chain(conn, body.serverId):
+            raise HTTPException(409, "Сервер занят активной цепью — выберите другой VPS")
+
         conn.execute(
             """
             INSERT INTO configs (id, server_id, protocol, status, created_at)
@@ -1345,12 +1349,12 @@ def _frontend_dist() -> Path | None:
 
     if getattr(sys, "frozen", False):
         bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-        for candidate in (bundle_root / "ui" / "dist", bundle_root / "frontend" / "dist"):
+        for candidate in (bundle_root / "hoplyra" / "static", bundle_root / "static", bundle_root / "ui" / "dist", bundle_root / "frontend" / "dist"):
             if candidate.is_dir():
                 return candidate
 
     base = Path(__file__).resolve().parent.parent
-    for candidate in (base.parent / "frontend" / "dist", base / "ui" / "dist"):
+    for candidate in (base / "hoplyra" / "static", base.parent / "frontend" / "dist", base / "ui" / "dist"):
         if candidate.is_dir():
             return candidate
     return None

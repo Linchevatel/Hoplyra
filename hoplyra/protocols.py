@@ -110,6 +110,29 @@ PersistentKeepalive = 25
         )
 
 
+def _find_free_awg_port_and_subnet(runner: RemoteRunner) -> tuple[int, str, str, str]:
+    code, out, _ = runner.run("ss -lun 2>/dev/null | grep -oE ':[0-9]+' | tr -d ':'")
+    used_ports = set(int(p) for p in out.split() if p.isdigit())
+    _, conf_out, _ = runner.run("grep -h 'ListenPort' /opt/hoplyra/instances/*/awg*.conf 2>/dev/null || true")
+    for line in conf_out.splitlines():
+        if "=" in line:
+            val = line.split("=")[-1].strip()
+            if val.isdigit():
+                used_ports.add(int(val))
+
+    port = 55424
+    while port in used_ports:
+        port += 1
+
+    subnet_idx = (port - 55400) % 250
+    if subnet_idx < 1:
+        subnet_idx = 1
+    subnet = f"10.9.{subnet_idx}.0/24"
+    server_ip = f"10.9.{subnet_idx}.1/24"
+    client_ip = f"10.9.{subnet_idx}.2"
+    return port, subnet, server_ip, client_ip
+
+
 class AmneziaWGDeployer(ProtocolDeployer):
     protocol = "awg"
     listen_port = 55424
@@ -117,8 +140,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, awg_version: str = "awg2.0", **kwargs: Any) -> DeployResult:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
-        client_ip = "10.9.1.2"
-        subnet = "10.9.1.0/24"
+        port, subnet, server_ip, client_ip = _find_free_awg_port_and_subnet(runner)
         awg = generate_awg_params(version=awg_version)
         psk = generate_wg_psk()
 
@@ -126,23 +148,26 @@ class AmneziaWGDeployer(ProtocolDeployer):
             server_priv=server_priv,
             client_pub=client_pub,
             client_ip=client_ip,
-            listen_port=self.listen_port,
+            listen_port=port,
             post_up=nat_postup(subnet),
             post_down=nat_postdown(subnet),
             params=awg,
             preshared_key=psk,
+            server_ip=server_ip,
         )
         client_conf = build_awg_client_conf(
             client_priv=client_priv,
             server_pub=server_pub,
             server_host=server_host,
-            listen_port=self.listen_port,
+            listen_port=port,
+            client_ip=f"{client_ip}/32",
             params=awg,
             preshared_key=psk,
         )
+        tag = config_id[:8]
         path = _instance_dir(config_id, runner.target.is_local)
-        container = f"cv-awg-{config_id[:8]}"
-        conf_path = f"{path}/awg0.conf"
+        container = f"cv-awg-{tag}"
+        conf_path = f"{path}/awg_{tag}.conf"
         mkdir_remote(runner, path)
         runner.upload_text(conf_path, awg_conf, 0o600)
         ensure_awg_on_host(runner)
@@ -153,20 +178,24 @@ class AmneziaWGDeployer(ProtocolDeployer):
             instance_path=path,
             meta={
                 "serverPublicKey": server_pub,
-                "listenPort": self.listen_port,
+                "listenPort": port,
                 "hostAwg": True,
                 "awgParams": awg.as_meta(),
                 "amneziaVpnUri": build_amnezia_awg_vpn_uri(
                     client_conf,
                     host=server_host,
-                    port=self.listen_port,
-                    description=f"Hoplyra {config_id[:8]}",
+                    port=port,
+                    description=f"Hoplyra {tag}",
                 ),
             },
         )
 
     def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
-        awg_quick_down(runner, f"{instance_path}/awg0.conf")
+        tag = config_id[:8]
+        conf_path = f"{instance_path}/awg_{tag}.conf"
+        awg_quick_down(runner, conf_path)
+        runner.run(f"find {instance_path} -name 'awg*.conf' -exec awg-quick down {{}} \\; 2>/dev/null || true")
+        runner.run(f"ip link delete awg_{tag} 2>/dev/null || true")
         runner.run(f"rm -rf {instance_path}")
 
 
@@ -183,7 +212,7 @@ class OpenVPNDeployer(ProtocolDeployer):
     def _build_client_ovpn(self, runner: RemoteRunner, path: str, server_host: str) -> str:
         return build_client_ovpn(runner, path, server_host, self.transport, self.listen_port)
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-openvpn-{config_id[:8]}"
 
@@ -214,7 +243,7 @@ class XrayDeployer(ProtocolDeployer):
     def __init__(self, *, bypass: bool = False) -> None:
         self.bypass = bypass
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-xray-{config_id[:8]}"
 
@@ -330,7 +359,7 @@ class Hysteria2Deployer(ProtocolDeployer):
     protocol = "hysteria2"
     listen_port = 443
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-hy2-{config_id[:8]}"
         password = secrets.token_urlsafe(16)
@@ -412,7 +441,7 @@ class TuicDeployer(ProtocolDeployer):
     protocol = "tuic"
     listen_port = 8448
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-tuic-{config_id[:8]}"
         tuic_uuid = str(uuid.uuid4())

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -16,6 +18,8 @@ _AWG2_H_RANGES = (
 AWG2_DEFAULT_I1 = (
     "<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>"
 )
+
+AWG3_DEFAULT_I1 = ""
 
 _AWG_MESSAGE_INITIATION = 56
 _AWG_MESSAGE_RESPONSE = 32
@@ -44,6 +48,27 @@ def _rand_awg2_packet_sizes() -> tuple[int, int, int, int]:
         break
     while True:
         s4 = random.randint(0, 20)
+        if s4 not in used:
+            break
+    return s1, s2, s3, s4
+
+
+def _rand_awg3_packet_sizes() -> tuple[int, int, int, int]:
+    used: set[int] = set()
+    s1 = random.randint(40, 160)
+    used.add(s1)
+    while True:
+        s2 = random.randint(40, 160)
+        if s2 not in used:
+            used.add(s2)
+            break
+    while True:
+        s3 = random.randint(16, 64)
+        if s3 not in used:
+            used.add(s3)
+            break
+    while True:
+        s4 = random.randint(12, 32)
         if s4 not in used:
             break
     return s1, s2, s3, s4
@@ -79,6 +104,16 @@ class AwgObfuscationParams:
     i3: str = ""
     i4: str = ""
     i5: str = ""
+    header_protection_key: str = ""
+    content_padding_addition: str = ""
+    rekey_after_time: str = ""
+    rekey_timeout: str = ""
+    reject_after_time: str = ""
+    keepalive_timeout: str = ""
+    max_handshake_attempts: str = ""
+    random_trailers: str = ""
+    disable_cookies: str = ""
+    persistent_keepalive_range: str = ""
 
     def conf_lines(self) -> str:
         lines = [
@@ -100,10 +135,29 @@ class AwgObfuscationParams:
         for idx, value in enumerate((self.i1, self.i2, self.i3, self.i4, self.i5), start=1):
             if value.strip():
                 lines.append(f"I{idx} = {value}")
+        if self.header_protection_key:
+            lines.append(f"HeaderProtectionKey = {self.header_protection_key}")
+        if self.content_padding_addition:
+            lines.append(f"ContentPaddingAddition = {self.content_padding_addition}")
+        if self.rekey_after_time:
+            lines.append(f"RekeyAfterTime = {self.rekey_after_time}")
+        if self.rekey_timeout:
+            lines.append(f"RekeyTimeout = {self.rekey_timeout}")
+        if self.reject_after_time:
+            lines.append(f"RejectAfterTime = {self.reject_after_time}")
+        if self.keepalive_timeout:
+            lines.append(f"KeepaliveTimeout = {self.keepalive_timeout}")
+        if self.max_handshake_attempts:
+            lines.append(f"MaxHandshakeAttempts = {self.max_handshake_attempts}")
+        if self.random_trailers:
+            lines.append(f"RandomTrailers = {self.random_trailers}")
+        if self.disable_cookies:
+            lines.append(f"DisableCookies = {self.disable_cookies}")
+
         return "\n".join(lines)
 
     def as_meta(self) -> dict[str, int | str]:
-        ver_str = "awg2.0" if self.i1 else ("awg1.5" if (self.s3 != 0 or "-" in str(self.h1)) else "awg")
+        ver_str = "awg3.1" if self.header_protection_key or self.content_padding_addition else ("awg2.0" if self.i1 else ("awg1.5" if (self.s3 != 0 or "-" in str(self.h1)) else "awg"))
         meta: dict[str, int | str] = {
             "jc": self.jc,
             "jmin": self.jmin,
@@ -118,16 +172,28 @@ class AwgObfuscationParams:
             "h4": self.h4,
             "awgVersion": ver_str,
         }
-        if self.i1.strip():
+        if self.i1.strip() and ver_str != "awg3.1":
             meta["i1"] = self.i1
-        if self.i2.strip():
-            meta["i2"] = self.i2
-        if self.i3.strip():
-            meta["i3"] = self.i3
-        if self.i4.strip():
-            meta["i4"] = self.i4
-        if self.i5.strip():
-            meta["i5"] = self.i5
+        if self.header_protection_key:
+            meta["headerProtectionKey"] = self.header_protection_key
+        if self.content_padding_addition:
+            meta["contentPaddingAddition"] = self.content_padding_addition
+        if self.rekey_after_time:
+            meta["rekeyAfterTime"] = self.rekey_after_time
+        if self.rekey_timeout:
+            meta["rekeyTimeout"] = self.rekey_timeout
+        if self.reject_after_time:
+            meta["rejectAfterTime"] = self.reject_after_time
+        if self.keepalive_timeout:
+            meta["keepaliveTimeout"] = self.keepalive_timeout
+        if self.max_handshake_attempts:
+            meta["maxHandshakeAttempts"] = self.max_handshake_attempts
+        if self.random_trailers:
+            meta["randomTrailers"] = self.random_trailers
+        if self.disable_cookies:
+            meta["disableCookies"] = self.disable_cookies
+        if self.persistent_keepalive_range:
+            meta["persistentKeepaliveRange"] = self.persistent_keepalive_range
         return meta
 
     @classmethod
@@ -145,7 +211,7 @@ class AwgObfuscationParams:
             return str(value) if value else ""
 
         ver = str(meta.get("awgVersion", "")).lower()
-        default_i1 = "" if ver in ("awg", "awg1", "awg1.0", "awg1.5") else AWG2_DEFAULT_I1
+        default_i1 = "" if ver in ("awg", "awg1", "awg1.0", "awg1.5", "awg3.1", "3.1", "3") else AWG2_DEFAULT_I1
 
         return cls(
             jc=_int("jc", 5),
@@ -159,11 +225,21 @@ class AwgObfuscationParams:
             h2=_h("h2", _AWG2_H_RANGES[1]),
             h3=_h("h3", _AWG2_H_RANGES[2]),
             h4=_h("h4", _AWG2_H_RANGES[3]),
-            i1=_opt_str("i1") or default_i1,
+            i1="" if ver in ("awg", "awg1", "awg1.0", "awg1.5", "awg3.1", "3.1", "3") else (_opt_str("i1") or default_i1),
             i2=_opt_str("i2"),
             i3=_opt_str("i3"),
             i4=_opt_str("i4"),
             i5=_opt_str("i5"),
+            header_protection_key=_opt_str("headerProtectionKey"),
+            content_padding_addition=_opt_str("contentPaddingAddition"),
+            rekey_after_time=_opt_str("rekeyAfterTime"),
+            rekey_timeout=_opt_str("rekeyTimeout"),
+            reject_after_time=_opt_str("rejectAfterTime"),
+            keepalive_timeout=_opt_str("keepaliveTimeout"),
+            max_handshake_attempts=_opt_str("maxHandshakeAttempts"),
+            random_trailers=_opt_str("randomTrailers"),
+            disable_cookies=_opt_str("disableCookies"),
+            persistent_keepalive_range=_opt_str("persistentKeepaliveRange"),
         )
 
 
@@ -185,6 +261,32 @@ def generate_awg_params(version: str = "awg2.0") -> AwgObfuscationParams:
             jc=jc, jmin=jmin, jmax=jmax, s1=s1, s2=s2, s3=s3, s4=s4,
             h1=h1, h2=h2, h3=h3, h4=h4, i1=""
         )
+    elif v in ("awg3.1", "3.1", "v3.1", "awg3", "3"):
+        hp_key = base64.b64encode(os.urandom(32)).decode("utf-8")
+        return AwgObfuscationParams(
+            jc=5,
+            jmin=10,
+            jmax=50,
+            s1=random.randint(40, 100),
+            s2=random.randint(25, 75),
+            s3=random.randint(30, 80),
+            s4=random.randint(10, 20),
+            h1="1",
+            h2="2",
+            h3="3",
+            h4="4",
+            i1="",
+            header_protection_key=hp_key,
+            content_padding_addition="10-100",
+            rekey_after_time="100-120",
+            rekey_timeout="3-7",
+            reject_after_time="150-180",
+            keepalive_timeout="5-15",
+            max_handshake_attempts="15-20",
+            random_trailers="",
+            disable_cookies="",
+            persistent_keepalive_range="25-35",
+        )
     elif v in ("awg1.5", "1.5"):
         jc = random.randint(4, 6)
         jmin = 10
@@ -205,6 +307,7 @@ def generate_awg_params(version: str = "awg2.0") -> AwgObfuscationParams:
             jc=jc, jmin=jmin, jmax=jmax, s1=s1, s2=s2, s3=s3, s4=s4,
             h1=h1, h2=h2, h3=h3, h4=h4, i1=AWG2_DEFAULT_I1
         )
+
 
 
 def generate_awg2_params() -> AwgObfuscationParams:
@@ -328,11 +431,12 @@ def build_awg_server_conf(
     post_down: str,
     params: AwgObfuscationParams | None = None,
     preshared_key: str | None = None,
+    server_ip: str = "10.9.1.1/24",
 ) -> str:
     awg = params or generate_awg2_params()
     psk_line = f"PresharedKey = {preshared_key}\n" if preshared_key else ""
     return f"""[Interface]
-Address = 10.9.1.1/24
+Address = {server_ip}
 ListenPort = {listen_port}
 PrivateKey = {server_priv}
 {awg.conf_lines()}
@@ -352,21 +456,24 @@ def build_awg_client_conf(
     server_host: str,
     listen_port: int,
     client_ip: str = "10.9.1.2/32",
-    dns: str = "1.1.1.1, 8.8.8.8",
+    dns: str = "1.1.1.1, 1.0.0.1",
     params: AwgObfuscationParams | None = None,
     preshared_key: str | None = None,
 ) -> str:
-    awg = params or generate_awg2_params()
+    awg = params or generate_awg_params("awg3.1")
     psk_line = f"PresharedKey = {preshared_key}\n" if preshared_key else ""
+    keepalive_val = awg.persistent_keepalive_range or "25"
     return f"""[Interface]
-PrivateKey = {client_priv}
 Address = {client_ip}
 DNS = {dns}
+PrivateKey = {client_priv}
 {awg.conf_lines()}
 
 [Peer]
 PublicKey = {server_pub}
-{psk_line}Endpoint = {server_host}:{listen_port}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
+{psk_line}AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = {server_host}:{listen_port}
+PersistentKeepalive = {keepalive_val}
 """
+
+

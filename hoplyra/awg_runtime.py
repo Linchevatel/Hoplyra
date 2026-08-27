@@ -26,13 +26,13 @@ if [ -f /opt/hoplyra/.awg-ready ] && command -v awg-quick >/dev/null 2>&1; then
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq software-properties-common gnupg curl iproute2 iptables
-if ! apt-get install -y -qq amneziawg amneziawg-tools 2>/dev/null; then
+apt-get install -y -qq software-properties-common gnupg curl iproute2 iptables dkms build-essential linux-headers-$(uname -r) 2>/dev/null || true
+if ! command -v awg-quick >/dev/null 2>&1; then
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
-  apt-get install -y -qq amneziawg amneziawg-tools iproute2 iptables
+  apt-get install -y -qq amneziawg amneziawg-tools amneziawg-dkms dkms build-essential
 fi
-modprobe amneziawg
+modprobe amneziawg 2>/dev/null || true
 date -Iseconds > /opt/hoplyra/.awg-ready
 """
 
@@ -230,7 +230,7 @@ def discover_awg_confs(runner: RemoteRunner, config_id: str | None = None) -> li
             "/opt/chainvault/chains /opt/chainvault/instances"
         )
     code, out, _ = runner.run(
-        f"find {find_roots} -name awg0.conf 2>/dev/null | sort -u",
+        f"find {find_roots} -name 'awg*.conf' 2>/dev/null | sort -u",
         timeout=60,
     )
     if code != 0 and not out.strip():

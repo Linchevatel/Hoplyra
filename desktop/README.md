@@ -5,52 +5,54 @@ Portable desktop builds — local control plane with embedded dashboard.
 ## Release files
 
 ```
-GitHub Releases (v1.3.3):
-Hoplyra-1.3.3-x86_64.AppImage
-Hoplyra-1.3.3-x64-portable.exe
-SHA256SUMS
-README.txt
-```
+GitHub Releases (v1.4.0):
+Hoplyra-1.4.0-x86_64.AppImage
+Hoplyra-1.4.0-x64-portable.exe
+GitHub Releases (v1.4.1):
+- `Hoplyra-1.4.1-x86_64.AppImage` (Linux x86_64)
+- `Hoplyra-1.4.1-x64-portable.exe` (Windows x64 portable)
 
-## Build Linux AppImage
+Also committed under Git LFS in this repository:
+- `desktop/dist/Hoplyra-1.4.1-x86_64.AppImage`
+- `desktop/dist/Hoplyra-1.4.1-x64-portable.exe`
 
-Requirements on the **build machine**: Node.js 20+, Python 3.11+, Docker (recommended).
+---
 
-```bash
-cd desktop
-npm install
-npm run build
-```
+## 2. Requirements
 
-## Build Windows portable
+### Linux
+- **64-bit x86_64**
+- **glibc 2.35+** (Ubuntu 22.04+, Debian 12+, Fedora 36+, Arch Linux)
+- `libfuse2` (if AppImage fails to mount on Ubuntu 22.04+):
+  ```bash
+  sudo apt install libfuse2
+  ```
 
-GitHub Actions in `.github/workflows/release-desktop.yml`, or locally on Windows:
+### Windows
+- **64-bit Windows 10 / 11**
+- No additional runtime required.
 
-```powershell
-cd desktop
-npm install
-npm run build:win
-```
+---
 
-## Run on Linux (x86_64)
+## 3. Running
 
-Requires **glibc 2.35+** (Ubuntu 22.04+, Debian 12+, Fedora 36+).
-
-```bash
-sudo apt install libfuse2   # Ubuntu/Debian
-chmod +x Hoplyra-1.3.3-x86_64.AppImage
-./Hoplyra-1.3.3-x86_64.AppImage
-```
-
-If AppImage does not start (missing FUSE):
+### Linux
 
 ```bash
-./Hoplyra-1.3.3-x86_64.AppImage --appimage-extract-and-run
+chmod +x Hoplyra-1.4.1-x86_64.AppImage
+./Hoplyra-1.4.1-x86_64.AppImage
 ```
 
-## Run on Windows
+If FUSE is not installed on the system:
 
-Double-click `Hoplyra-1.3.3-x64-portable.exe`.
+```bash
+./Hoplyra-1.4.1-x86_64.AppImage --appimage-extract-and-run
+```
+
+### Windows
+
+Double-click `Hoplyra-1.4.1-x64-portable.exe`.
+
 
 Data directory: `%APPDATA%\hoplyra-desktop\hoplyra-data\`
 

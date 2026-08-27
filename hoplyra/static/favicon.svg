@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="8" fill="#09091a"/>
+  <path d="M16 2.75 L27.35 9.25 V22.25 L16 28.75 L4.65 22.25 V9.25 Z" fill="url(#fill)"/>
+  <path d="M16 2.75 L27.35 9.25 V22.25 L16 28.75 L4.65 22.25 V9.25 Z" stroke="url(#g)" stroke-width="1.5" stroke-linejoin="round" opacity="0.85"/>
+  <path d="M8.5 24.5 H14.25 V16.75 H20.75 L23.75 9.25" stroke="url(#g)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.35"/>
+  <path d="M8.5 24.5 H14.25 V16.75 H20.75 L23.75 9.25" stroke="url(#g)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="8.5" cy="24.5" r="7.5" fill="#22d3ee" opacity="0.18"/>
+  <circle cx="8.5" cy="24.5" r="3.1" fill="url(#n1)"/>
+  <circle cx="7.8" cy="23.8" r="0.9" fill="white" opacity="0.75"/>
+  <circle cx="14.25" cy="16.75" r="6.5" fill="#5eead4" opacity="0.18"/>
+  <circle cx="14.25" cy="16.75" r="2.9" fill="url(#n2)"/>
+  <circle cx="13.55" cy="16.05" r="0.8" fill="white" opacity="0.75"/>
+  <circle cx="23.75" cy="9.25" r="8.5" fill="#a78bfa" opacity="0.28"/>
+  <circle cx="23.75" cy="9.25" r="3.3" fill="url(#n3)"/>
+  <circle cx="23.05" cy="8.55" r="0.95" fill="white" opacity="0.75"/>
+  <path d="M21.2 8.2 L23.75 9.25 L21.2 10.3" stroke="#e9d5ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="26.5" cy="6.5" r="1" fill="#22d3ee" opacity="0.9"/>
+  <circle cx="28" cy="8.5" r="0.65" fill="#a78bfa" opacity="0.7"/>
+  <circle cx="5.5" cy="27" r="0.75" fill="#22d3ee" opacity="0.55"/>
+  <defs>
+    <linearGradient id="g" x1="4" y1="3" x2="28" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="0.5" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="fill" x1="16" y1="3" x2="16" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0.08"/>
+    </linearGradient>
+    <radialGradient id="n1" cx="32%" cy="28%" r="72%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="35%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </radialGradient>
+    <radialGradient id="n2" cx="32%" cy="28%" r="72%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="35%" stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#0f766e"/>
+    </radialGradient>
+    <radialGradient id="n3" cx="32%" cy="28%" r="72%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="35%" stop-color="#c4b5fd"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </radialGradient>
+  </defs>
+</svg>
