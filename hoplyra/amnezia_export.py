@@ -45,6 +45,7 @@ def build_amnezia_awg_package(
     host: str,
     port: int,
     description: str,
+    awg_version: str = "awg2.0",
 ) -> dict[str, Any]:
     kv = _parse_kv_conf(client_conf)
     dns_match = re.search(
@@ -81,28 +82,36 @@ def build_amnezia_awg_package(
         "I3",
         "I4",
         "I5",
+        "RandomTrailers",
+        "DisableCookies",
     ):
         if kv.get(key):
             last_config[key] = str(kv[key])
     if kv.get("PresharedKey"):
         last_config["psk_key"] = kv["PresharedKey"]
 
+    awg_ver_clean = (awg_version or "awg2.0").lower().strip()
+    is_v3 = awg_ver_clean in ("awg3.1", "3.1", "3")
+    is_v2 = awg_ver_clean in ("awg2.0", "2.0", "2")
+    container_name = AWG2_CONTAINER if (is_v2 or is_v3) else "amnezia-awg"
+    proto_ver = "3.1" if is_v3 else ("2" if is_v2 else "1")
+
     awg_container = {
         "last_config": json.dumps(last_config, ensure_ascii=False),
         "isThirdPartyConfig": True,
         "port": str(port),
         "transport_proto": "udp",
-        "protocol_version": "2",
+        "protocol_version": proto_ver,
     }
 
     return {
         "containers": [
             {
-                "container": AWG2_CONTAINER,
+                "container": container_name,
                 AWG_PROTOCOL_KEY: awg_container,
             }
         ],
-        "defaultContainer": AWG2_CONTAINER,
+        "defaultContainer": container_name,
         "description": description,
         "dns1": dns1,
         "dns2": dns2,
@@ -116,11 +125,13 @@ def build_amnezia_awg_vpn_uri(
     host: str,
     port: int,
     description: str,
+    awg_version: str = "awg2.0",
 ) -> str:
     package = build_amnezia_awg_package(
         client_conf,
         host=host,
         port=port,
         description=description,
+        awg_version=awg_version,
     )
     return encode_amnezia_vpn_uri(package)

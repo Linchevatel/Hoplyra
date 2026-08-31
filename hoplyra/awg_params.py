@@ -79,6 +79,8 @@ class AwgObfuscationParams:
     i3: str = ""
     i4: str = ""
     i5: str = ""
+    random_trailers: bool = False
+    disable_cookies: bool = False
 
     def conf_lines(self) -> str:
         lines = [
@@ -87,16 +89,23 @@ class AwgObfuscationParams:
             f"Jmax = {self.jmax}",
             f"S1 = {self.s1}",
             f"S2 = {self.s2}",
-            f"S3 = {self.s3}",
-            f"S4 = {self.s4}",
+        ]
+        if self.s3 > 0 or self.s4 > 0:
+            lines.append(f"S3 = {self.s3}")
+            lines.append(f"S4 = {self.s4}")
+        lines.extend([
             f"H1 = {self.h1}",
             f"H2 = {self.h2}",
             f"H3 = {self.h3}",
             f"H4 = {self.h4}",
-        ]
+        ])
         for idx, value in enumerate((self.i1, self.i2, self.i3, self.i4, self.i5), start=1):
             if value.strip():
                 lines.append(f"I{idx} = {value}")
+        if self.random_trailers:
+            lines.append("RandomTrailers = 1")
+        if self.disable_cookies:
+            lines.append("DisableCookies = 1")
         return "\n".join(lines)
 
     def as_meta(self) -> dict[str, int | str]:
@@ -112,7 +121,7 @@ class AwgObfuscationParams:
             "h2": self.h2,
             "h3": self.h3,
             "h4": self.h4,
-            "awgVersion": 2,
+            "awgVersion": "3.1" if self.random_trailers or self.disable_cookies else 2,
         }
         if self.i1.strip():
             meta["i1"] = self.i1
@@ -124,6 +133,10 @@ class AwgObfuscationParams:
             meta["i4"] = self.i4
         if self.i5.strip():
             meta["i5"] = self.i5
+        if self.random_trailers:
+            meta["randomTrailers"] = 1
+        if self.disable_cookies:
+            meta["disableCookies"] = 1
         return meta
 
     @classmethod
@@ -157,7 +170,52 @@ class AwgObfuscationParams:
             i3=_opt_str("i3"),
             i4=_opt_str("i4"),
             i5=_opt_str("i5"),
+            random_trailers=bool(meta.get("randomTrailers")),
+            disable_cookies=bool(meta.get("disableCookies")),
         )
+
+
+def generate_awg1_0_params() -> AwgObfuscationParams:
+    return AwgObfuscationParams(
+        jc=random.randint(4, 6),
+        jmin=10,
+        jmax=50,
+        s1=random.randint(15, 150),
+        s2=random.randint(15, 150),
+        s3=0,
+        s4=0,
+        h1=str(random.randint(100000000, 2000000000)),
+        h2=str(random.randint(100000000, 2000000000)),
+        h3=str(random.randint(100000000, 2000000000)),
+        h4=str(random.randint(100000000, 2000000000)),
+        i1="",
+        i2="",
+        i3="",
+        i4="",
+        i5="",
+    )
+
+
+def generate_awg1_5_params() -> AwgObfuscationParams:
+    s1, s2, s3, s4 = _rand_awg2_packet_sizes()
+    return AwgObfuscationParams(
+        jc=random.randint(4, 6),
+        jmin=10,
+        jmax=50,
+        s1=s1,
+        s2=s2,
+        s3=s3,
+        s4=s4,
+        h1=str(random.randint(100000000, 2000000000)),
+        h2=str(random.randint(100000000, 2000000000)),
+        h3=str(random.randint(100000000, 2000000000)),
+        h4=str(random.randint(100000000, 2000000000)),
+        i1="",
+        i2="",
+        i3="",
+        i4="",
+        i5="",
+    )
 
 
 def generate_awg2_params() -> AwgObfuscationParams:
@@ -180,6 +238,40 @@ def generate_awg2_params() -> AwgObfuscationParams:
         h4=h4,
         i1=AWG2_DEFAULT_I1,
     )
+
+
+def generate_awg3_1_params() -> AwgObfuscationParams:
+    jc = random.randint(4, 6)
+    jmin = 10
+    jmax = 50
+    s1, s2, s3, s4 = _rand_awg2_packet_sizes()
+    return AwgObfuscationParams(
+        jc=jc,
+        jmin=jmin,
+        jmax=jmax,
+        s1=s1,
+        s2=s2,
+        s3=s3,
+        s4=s4,
+        h1=str(random.randint(100000000, 2000000000)),
+        h2=str(random.randint(100000000, 2000000000)),
+        h3=str(random.randint(100000000, 2000000000)),
+        h4=str(random.randint(100000000, 2000000000)),
+        i1=AWG2_DEFAULT_I1,
+        random_trailers=True,
+        disable_cookies=True,
+    )
+
+
+def generate_awg_params(version: str = "awg2.0") -> AwgObfuscationParams:
+    v = (version or "awg2.0").lower().strip()
+    if v in ("awg3.1", "3.1", "3"):
+        return generate_awg3_1_params()
+    elif v in ("awg1.0", "1.0", "1", "awg"):
+        return generate_awg1_0_params()
+    elif v in ("awg1.5", "1.5"):
+        return generate_awg1_5_params()
+    return generate_awg2_params()
 
 
 DEFAULT_AWG_PARAMS = AwgObfuscationParams()
@@ -226,8 +318,8 @@ def parse_awg_params_from_conf(conf: str) -> AwgObfuscationParams | None:
         jmax=int(kv["Jmax"]),
         s1=int(kv["S1"]),
         s2=int(kv["S2"]),
-        s3=int(kv["S3"]),
-        s4=int(kv["S4"]),
+        s3=int(kv.get("S3", 0)),
+        s4=int(kv.get("S4", 0)),
         h1=kv["H1"],
         h2=kv["H2"],
         h3=kv["H3"],
@@ -237,6 +329,8 @@ def parse_awg_params_from_conf(conf: str) -> AwgObfuscationParams | None:
         i3=kv.get("I3", ""),
         i4=kv.get("I4", ""),
         i5=kv.get("I5", ""),
+        random_trailers=kv.get("RandomTrailers") in ("1", "on", "true", "True"),
+        disable_cookies=kv.get("DisableCookies") in ("1", "on", "true", "True"),
     )
 
 
@@ -296,13 +390,14 @@ def build_awg_server_conf(
     listen_port: int,
     post_up: str,
     post_down: str,
+    server_ip_cidr: str = "10.9.1.1/24",
     params: AwgObfuscationParams | None = None,
     preshared_key: str | None = None,
 ) -> str:
     awg = params or generate_awg2_params()
     psk_line = f"PresharedKey = {preshared_key}\n" if preshared_key else ""
     return f"""[Interface]
-Address = 10.9.1.1/24
+Address = {server_ip_cidr}
 ListenPort = {listen_port}
 PrivateKey = {server_priv}
 {awg.conf_lines()}

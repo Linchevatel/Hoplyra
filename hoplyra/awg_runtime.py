@@ -230,7 +230,7 @@ def discover_awg_confs(runner: RemoteRunner, config_id: str | None = None) -> li
             "/opt/chainvault/chains /opt/chainvault/instances"
         )
     code, out, _ = runner.run(
-        f"find {find_roots} -name awg0.conf 2>/dev/null | sort -u",
+        f"find {find_roots} -name 'awg*.conf' 2>/dev/null | sort -u",
         timeout=60,
     )
     if code != 0 and not out.strip():

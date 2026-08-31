@@ -48,6 +48,7 @@ def purge_host_artifacts(runner: RemoteRunner, config_id: str, *, chain: bool) -
     tag = chain_tag_from_config_id(config_id)
     for conf in discover_awg_confs(runner, config_id):
         awg_quick_down(runner, conf)
+    runner.run(f"ip link delete awg_{config_id[:8]} 2>/dev/null || true; ip link delete awg_{config_id.replace('-', '')[:12]} 2>/dev/null || true", timeout=30)
 
     if chain:
         runner.run(_wg_link_cleanup_cmd(config_id), timeout=120)

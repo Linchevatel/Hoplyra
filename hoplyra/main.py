@@ -133,6 +133,7 @@ class DeployRequest(BaseModel):
     protocol: str
     transport: str | None = None
     xrayBypass: bool = False
+    awgVersion: str | None = None
 
 
 def _normalize_auth(body: ServerCreate) -> ServerTarget:
@@ -919,30 +920,20 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
             raise HTTPException(400, f"Подготовка VPS: {exc}") from exc
 
     config_id = new_id()
-    log.info("Deploy %s on %s (%s) config=%s", protocol, row["name"], row["host"], config_id)
+    log.info("Deploy %s on %s (%s) config=%s body=%s", protocol, row["name"], row["host"], config_id, body.dict())
 
-    recover_stuck_deploying()
+    awg_ver = body.awgVersion or "awg3.1"
+    meta_initial = {"awgVersion": awg_ver} if protocol == "awg" else {}
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        if _server_has_active_config(conn, body.serverId):
-            raise HTTPException(409, "Сервер занят активной цепью или VPN — выберите другой VPS")
-        existing = conn.execute(
-            "SELECT id, status FROM configs WHERE server_id = ? AND protocol = ?",
-            (body.serverId, protocol),
-        ).fetchone()
-        if existing and existing["status"] in ("active", "deploying"):
-            cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (existing["id"],)).fetchone()
-            if existing["status"] == "active":
-                log.info("Deploy %s on %s — already active, returning existing config", protocol, row["name"])
-            return row_to_config(cfg_row)
         _delete_stale_config(conn, body.serverId, protocol)
         conn.execute(
             """
-            INSERT INTO configs (id, server_id, protocol, status, created_at)
-            VALUES (?, ?, ?, 'deploying', ?)
+            INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)
+            VALUES (?, ?, ?, 'deploying', ?, ?)
             """,
-            (config_id, body.serverId, protocol, db._now()),
+            (config_id, body.serverId, protocol, json.dumps(meta_initial), db._now()),
         )
         cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
 
@@ -952,6 +943,7 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
         protocol=protocol,
         transport=transport,
         xray_bypass=body.xrayBypass,
+        awg_version=awg_ver,
         host=row["host"],
         target=target,
         get_server_row=_get_server_row,
@@ -1327,12 +1319,20 @@ def _frontend_dist() -> Path | None:
 
     if getattr(sys, "frozen", False):
         bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-        for candidate in (bundle_root / "ui" / "dist", bundle_root / "frontend" / "dist"):
+        for candidate in (
+            bundle_root / "hoplyra" / "static",
+            bundle_root / "ui" / "dist",
+            bundle_root / "frontend" / "dist",
+        ):
             if candidate.is_dir():
                 return candidate
 
-    base = Path(__file__).resolve().parent.parent
-    for candidate in (base.parent / "frontend" / "dist", base / "ui" / "dist"):
+    base = Path(__file__).resolve().parent
+    for candidate in (
+        base / "static",
+        base.parent / "frontend" / "dist",
+        base.parent / "ui" / "dist",
+    ):
         if candidate.is_dir():
             return candidate
     return None
@@ -1354,7 +1354,14 @@ def _mount_frontend(app: FastAPI) -> None:
             raise HTTPException(404)
         candidate = dist / spa_path
         if spa_path and candidate.is_file():
-            return FileResponse(candidate)
+            headers = {}
+            if candidate.suffix == ".html":
+                headers = {
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }
+            return FileResponse(candidate, headers=headers)
         return FileResponse(
             dist / "index.html",
             headers={

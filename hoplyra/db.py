@@ -54,8 +54,7 @@ def init_db() -> None:
                 container_name TEXT,
                 instance_path TEXT,
                 meta_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                UNIQUE(server_id, protocol)
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS panel_auth (
@@ -141,6 +140,8 @@ def row_to_config(row: sqlite3.Row) -> dict[str, Any]:
     proxy = socks_proxy_for_response(meta)
     if proxy:
         result["socksProxy"] = proxy
+    if result.get("protocol") == "awg" and not result.get("awgVersion"):
+        result["awgVersion"] = "awg3.1"
     if result.get("protocol") == "xray" and not result.get("vlessUri") and result.get("clientConfig"):
         match = re.search(r"vless://[^\s]+", result["clientConfig"])
         if match:
