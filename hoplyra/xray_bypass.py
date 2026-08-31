@@ -9,9 +9,9 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
-REALITY_DEST = "yandex.net:443"
-REALITY_SERVER_NAMES = ["yandex.net", "yandex.ru", "www.yandex.net", "yandex.com"]
-REALITY_SERVER_NAME = "yandex.net"
+REALITY_DEST = "swdist.apple.com:443"
+REALITY_SERVER_NAMES = ["swdist.apple.com", "updates.cdn-apple.com", "gateway.icloud.com"]
+REALITY_SERVER_NAME = "swdist.apple.com"
 REALITY_FINGERPRINT = "qq"
 
 RU_DIRECT_DOMAINS: tuple[str, ...] = (
@@ -147,11 +147,16 @@ def _client_sniffing() -> dict[str, Any]:
     }
 
 
-def _client_routing_rules() -> list[dict[str, Any]]:
-    return [
+def _client_routing_rules(server_host: str | None = None) -> list[dict[str, Any]]:
+    rules: list[dict[str, Any]] = [
+        {"type": "field", "port": 53, "outboundTag": "dns-out"},
+        {"type": "field", "domain": ["domain:2ip.ru"], "outboundTag": "proxy"},
         {"type": "field", "protocol": ["bittorrent"], "outboundTag": "direct"},
-        {"type": "field", "domain": list(RU_DIRECT_DOMAINS), "outboundTag": "direct"},
     ]
+    if server_host:
+        rules.append({"type": "field", "ip": [server_host], "outboundTag": "direct"})
+    rules.append({"type": "field", "domain": list(RU_DIRECT_DOMAINS), "outboundTag": "direct"})
+    return rules
 
 
 def build_reality_vless_inbound(
@@ -203,11 +208,15 @@ def build_bypass_client_config(
 ) -> dict[str, Any]:
     return {
         "dns": {
-            "servers": ["1.1.1.1", "1.0.0.1"],
-            "queryStrategy": "UseIP",
+            "servers": [
+                "https://1.1.1.1/dns-query",
+                "https://8.8.8.8/dns-query",
+                "1.1.1.1"
+            ],
+            "queryStrategy": "UseIPv4",
         },
         "routing": {
-            "rules": _client_routing_rules(),
+            "rules": _client_routing_rules(server_host),
             "domainMatcher": "hybrid",
             "domainStrategy": "IPIfNonMatch",
         },
@@ -260,6 +269,7 @@ def build_bypass_client_config(
                     },
                 },
             },
+            {"tag": "dns-out", "protocol": "dns"},
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},
         ],
@@ -299,10 +309,27 @@ def build_bypass_server_config(
 ) -> dict[str, Any]:
     return {
         "log": {"loglevel": "warning"},
+        "dns": {
+            "servers": ["1.1.1.1", "8.8.8.8"],
+            "queryStrategy": "UseIPv4",
+        },
         "inbounds": [build_reality_vless_inbound(vless_uuid, private_key, short_id, port=port)],
-        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+        "outbounds": [
+            {
+                "protocol": "freedom",
+                "tag": "direct",
+                "settings": {
+                    "domainStrategy": "UseIPv4",
+                },
+                "streamSettings": {
+                    "sockopt": {
+                        "tcpKeepAliveInterval": 15,
+                    }
+                },
+            }
+        ],
         "routing": {
-            "domainStrategy": "AsIs",
+            "domainStrategy": "IPIfNonMatch",
             "rules": [{"type": "field", "network": "tcp,udp", "outboundTag": "direct"}],
         },
     }

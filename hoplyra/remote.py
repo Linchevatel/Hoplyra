@@ -447,6 +447,9 @@ def nat_postdown(subnet: str, iface_var: str = detect_wan_iface_script()) -> str
 
 def _detect_compose_runtime(runner: RemoteRunner) -> str:
     """Return podman-compose, podman compose, or docker compose — whichever is available."""
+    code, out, _ = runner.run("(docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && echo ok) || true")
+    if "ok" in out:
+        return "docker compose"
     code, _, _ = runner.run("podman compose version >/dev/null 2>&1")
     if code == 0:
         return "podman compose"

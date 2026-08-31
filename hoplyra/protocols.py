@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import uuid
 from abc import ABC, abstractmethod
@@ -14,7 +15,15 @@ from hoplyra.wg_runtime import compose_wg_service, ensure_wg_image
 from hoplyra.xray_bypass import format_bypass_client_bundle
 from hoplyra.xray_runtime import XRAY_MOUNT, compose_xray_service, ensure_xray_image, tls_cert_paths
 from hoplyra.awg_runtime import awg_quick_down, awg_quick_up, ensure_awg_on_host
-from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg2_params
+from hoplyra.awg_params import (
+    build_awg_client_conf,
+    build_awg_server_conf,
+    generate_awg1_0_params,
+    generate_awg1_5_params,
+    generate_awg2_params,
+    generate_awg3_1_params,
+    generate_awg_params,
+)
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
 from hoplyra.openvpn_runtime import (
     build_client_ovpn,
@@ -55,7 +64,7 @@ class ProtocolDeployer(ABC):
         podman_compose_down(runner, instance_path, self.compose_project(config_id))
 
     @abstractmethod
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         ...
 
 
@@ -63,7 +72,7 @@ class WireGuardDeployer(ProtocolDeployer):
     protocol = "wg"
     listen_port = 51820
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
         client_ip = "10.66.66.2"
@@ -109,23 +118,81 @@ PersistentKeepalive = 25
         )
 
 
+def _find_free_udp_port(runner: RemoteRunner, base_port: int = 55424) -> int:
+    used: set[int] = set()
+    _, out1, _ = runner.run("ss -ulpn 2>/dev/null", timeout=30)
+    for line in out1.splitlines():
+        parts = line.split()
+        if len(parts) >= 4:
+            addr = parts[3]
+            if ":" in addr:
+                try:
+                    used.add(int(addr.rsplit(":", 1)[-1]))
+                except ValueError:
+                    pass
+    _, out2, _ = runner.run("awg show 2>/dev/null | grep 'listening port'", timeout=30)
+    for line in out2.splitlines():
+        match = re.search(r"listening port:\s*(\d+)", line)
+        if match:
+            used.add(int(match.group(1)))
+    _, out3, _ = runner.run("wg show 2>/dev/null | grep 'listening port'", timeout=30)
+    for line in out3.splitlines():
+        match = re.search(r"listening port:\s*(\d+)", line)
+        if match:
+            used.add(int(match.group(1)))
+    port = base_port
+    while port in used:
+        port += 1
+    return port
+
+
+def _find_free_awg_subnet(runner: RemoteRunner) -> tuple[str, str, str]:
+    code, out, _ = runner.run("ip addr show 2>/dev/null", timeout=30)
+    used: set[int] = set()
+    for line in out.splitlines():
+        if "10.9." in line:
+            match = re.search(r"10\.9\.(\d+)\.", line)
+            if match:
+                used.add(int(match.group(1)))
+    idx = 1
+    while idx in used:
+        idx += 1
+    return f"10.9.{idx}.1/24", f"10.9.{idx}.2", f"10.9.{idx}.0/24"
+
+
 class AmneziaWGDeployer(ProtocolDeployer):
     protocol = "awg"
     listen_port = 55424
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        awg_ver_raw = kwargs.get("awg_version") or kwargs.get("awgVersion") or "awg3.1"
+        awg_ver_clean = str(awg_ver_raw).lower().strip()
+        if awg_ver_clean in ("awg3.1", "3.1", "3"):
+            awg = generate_awg3_1_params()
+            ver_label = "awg3.1"
+        elif awg_ver_clean in ("awg1.0", "1.0", "1", "awg"):
+            awg = generate_awg1_0_params()
+            ver_label = "awg1.0"
+        elif awg_ver_clean in ("awg1.5", "1.5"):
+            awg = generate_awg1_5_params()
+            ver_label = "awg1.5"
+        else:
+            awg = generate_awg2_params()
+            ver_label = "awg2.0"
+
+        port = _find_free_udp_port(runner, self.listen_port)
+        server_ip_cidr, client_ip, subnet = _find_free_awg_subnet(runner)
+
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
-        client_ip = "10.9.1.2"
-        subnet = "10.9.1.0/24"
-        awg = generate_awg2_params()
         psk = generate_wg_psk()
 
         awg_conf = build_awg_server_conf(
             server_priv=server_priv,
             client_pub=client_pub,
             client_ip=client_ip,
-            listen_port=self.listen_port,
+            listen_port=port,
+            server_ip_cidr=server_ip_cidr,
             post_up=nat_postup(subnet),
             post_down=nat_postdown(subnet),
             params=awg,
@@ -135,13 +202,15 @@ class AmneziaWGDeployer(ProtocolDeployer):
             client_priv=client_priv,
             server_pub=server_pub,
             server_host=server_host,
-            listen_port=self.listen_port,
+            listen_port=port,
+            client_ip=f"{client_ip}/32",
             params=awg,
             preshared_key=psk,
         )
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-awg-{config_id[:8]}"
-        conf_path = f"{path}/awg0.conf"
+        conf_name = f"awg_{config_id[:8]}.conf"
+        conf_path = f"{path}/{conf_name}"
         mkdir_remote(runner, path)
         runner.upload_text(conf_path, awg_conf, 0o600)
         ensure_awg_on_host(runner)
@@ -152,20 +221,25 @@ class AmneziaWGDeployer(ProtocolDeployer):
             instance_path=path,
             meta={
                 "serverPublicKey": server_pub,
-                "listenPort": self.listen_port,
+                "listenPort": port,
                 "hostAwg": True,
+                "awgVersion": ver_label,
                 "awgParams": awg.as_meta(),
                 "amneziaVpnUri": build_amnezia_awg_vpn_uri(
                     client_conf,
                     host=server_host,
-                    port=self.listen_port,
-                    description=f"Hoplyra {config_id[:8]}",
+                    port=port,
+                    description=f"Hoplyra {config_id[:8]} ({ver_label})",
+                    awg_version=ver_label,
                 ),
             },
         )
 
     def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
+        conf_name = f"awg_{config_id[:8]}.conf"
+        awg_quick_down(runner, f"{instance_path}/{conf_name}")
         awg_quick_down(runner, f"{instance_path}/awg0.conf")
+        runner.run(f"ip link delete awg_{config_id[:8]} 2>/dev/null || true; ip link delete awg_{config_id.replace('-', '')[:12]} 2>/dev/null || true", timeout=30)
         runner.run(f"rm -rf {instance_path}")
 
 
@@ -182,7 +256,7 @@ class OpenVPNDeployer(ProtocolDeployer):
     def _build_client_ovpn(self, runner: RemoteRunner, path: str, server_host: str) -> str:
         return build_client_ovpn(runner, path, server_host, self.transport, self.listen_port)
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-openvpn-{config_id[:8]}"
 
@@ -206,6 +280,24 @@ class OpenVPNDeployer(ProtocolDeployer):
         )
 
 
+def _find_free_tcp_port(runner: RemoteRunner, base_port: int = 443) -> int:
+    used: set[int] = set()
+    _, out, _ = runner.run("ss -tlpn 2>/dev/null", timeout=30)
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4:
+            addr = parts[3]
+            if ":" in addr:
+                try:
+                    used.add(int(addr.rsplit(":", 1)[-1]))
+                except ValueError:
+                    pass
+    port = base_port
+    while port in used:
+        port += 1
+    return port
+
+
 class XrayDeployer(ProtocolDeployer):
     protocol = "xray"
     listen_port = 443
@@ -213,103 +305,27 @@ class XrayDeployer(ProtocolDeployer):
     def __init__(self, *, bypass: bool = False) -> None:
         self.bypass = bypass
 
-    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str) -> DeployResult:
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-xray-{config_id[:8]}"
 
-        if self.bypass:
-            xray_config, client_text, meta, _secrets = format_bypass_client_bundle(
-                server_host,
-                config_id,
-                port=self.listen_port,
-            )
-            mkdir_remote(runner, path)
-            ensure_xray_image(runner)
-            runner.upload_text(f"{path}/config.json", json.dumps(xray_config, indent=2))
-            compose = f"services:\n{compose_xray_service(container, path)}\n"
-            runner.upload_text(f"{path}/docker-compose.yml", compose)
-            podman_compose_up(runner, path, self.compose_project(config_id))
-            return DeployResult(
-                client_config=client_text,
-                container_name=container,
-                instance_path=path,
-                meta=meta,
-            )
-
-        vless_uuid = str(uuid.uuid4())
-        cert_pem, key_pem = tls_cert_paths()
-
-        xray_config = {
-            "log": {"loglevel": "warning"},
-            "inbounds": [
-                {
-                    "tag": "vless-in",
-                    "port": self.listen_port,
-                    "listen": "0.0.0.0",
-                    "protocol": "vless",
-                    "settings": {
-                        "clients": [{"id": vless_uuid, "flow": "xtls-rprx-vision"}],
-                        "decryption": "none",
-                    },
-                    "streamSettings": {
-                        "network": "tcp",
-                        "security": "tls",
-                        "tlsSettings": {
-                            "certificates": [
-                                {"certificateFile": cert_pem, "keyFile": key_pem}
-                            ],
-                        },
-                    },
-                }
-            ],
-            "outbounds": [{"protocol": "freedom", "tag": "direct"}],
-        }
-
-        client_json = json.dumps(
-            {
-                "outbounds": [
-                    {
-                        "protocol": "vless",
-                        "settings": {
-                            "vnext": [
-                                {
-                                    "address": server_host,
-                                    "port": self.listen_port,
-                                    "users": [
-                                        {
-                                            "id": vless_uuid,
-                                            "encryption": "none",
-                                            "flow": "xtls-rprx-vision",
-                                        }
-                                    ],
-                                }
-                            ]
-                        },
-                        "streamSettings": {"network": "tcp", "security": "tls", "serverName": server_host},
-                    }
-                ]
-            },
-            indent=2,
+        port = _find_free_tcp_port(runner, self.listen_port)
+        xray_config, client_text, meta, _secrets = format_bypass_client_bundle(
+            server_host,
+            config_id,
+            port=port,
         )
-
-        vless_uri = (
-            f"vless://{vless_uuid}@{server_host}:{self.listen_port}"
-            f"?encryption=none&security=tls&type=tcp&flow=xtls-rprx-vision&sni={server_host}"
-            f"#Hoplyra-{config_id[:8]}"
-        )
-
         mkdir_remote(runner, path)
         ensure_xray_image(runner)
         runner.upload_text(f"{path}/config.json", json.dumps(xray_config, indent=2))
-        compose = f"services:\n{compose_xray_service(container, path, tls_cn=server_host)}\n"
+        compose = f"services:\n{compose_xray_service(container, path)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         podman_compose_up(runner, path, self.compose_project(config_id))
-
         return DeployResult(
-            client_config=f"{client_json}\n\n{vless_uri}\n",
+            client_config=client_text,
             container_name=container,
             instance_path=path,
-            meta={"vlessUuid": vless_uuid, "vlessUri": vless_uri, "listenPort": self.listen_port},
+            meta=meta,
         )
 
 
