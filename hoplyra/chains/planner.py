@@ -13,6 +13,7 @@ class HopSpec:
     index: int
     transport: str | None = None
     xray_bypass: bool = False
+    awg_version: str | None = None
 
 
 @dataclass
@@ -59,6 +60,7 @@ def build_plan(hops: list[dict[str, Any]], server_hosts: dict[str, str]) -> Chai
             index=i,
             transport=h.get("transport"),
             xray_bypass=bool(h.get("xrayBypass")),
+            awg_version=h.get("awgVersion"),
         )
         for i, h in enumerate(hops)
     ]

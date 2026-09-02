@@ -17,7 +17,7 @@ from hoplyra.chains.preflight import recheck_runners_online
 from hoplyra.deploy_cancel import check_deploy_cancel
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_up, wan_wg_forward_down_cmd, wan_wg_forward_up_cmd
 from hoplyra.wg_keys import generate_wg_keypair
-from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg2_params
+from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg2_params, generate_awg_params
 from hoplyra.awg_runtime import awg_quick_up, ensure_awg_on_host
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
 from hoplyra.wg_keys import generate_wg_psk
@@ -721,7 +721,8 @@ Log err file /dev/null
     ) -> tuple[str, str, str]:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
-        awg = generate_awg2_params()
+        ver_label = getattr(hop, "awg_version", None) or "awg3.1"
+        awg = generate_awg_params(ver_label)
         psk = generate_wg_psk()
         if gateway_mode:
             post_up = "sysctl -w net.ipv4.ip_forward=1 || true"
@@ -1328,7 +1329,8 @@ Log err file /dev/null
     ) -> tuple[str, str]:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
-        awg = generate_awg2_params()
+        ver_label = getattr(hop, "awg_version", None) or "awg3.1"
+        awg = generate_awg_params(ver_label)
         psk = generate_wg_psk()
         awg_conf = build_awg_server_conf(
             server_priv=server_priv,
@@ -1572,6 +1574,8 @@ def _hop_meta_for_storage(h: HopSpec, plan: ChainPlan) -> dict[str, Any]:
         hop["transport"] = _ovpn_transport(h, plan=plan)
     if h.protocol == "xray" and h.xray_bypass:
         hop["xrayBypass"] = True
+    if h.protocol == "awg":
+        hop["awgVersion"] = getattr(h, "awg_version", None) or "awg3.1"
     return hop
 
 
@@ -1587,12 +1591,14 @@ def _chain_result_meta(plan: ChainPlan, client_config: str, *, config_id: str = 
     if plan.entry.protocol == "awg":
         tag = _chain_tag(config_id) if config_id else "chain"
         meta["hostAwg"] = True
+        meta["awgVersion"] = getattr(plan.entry, "awg_version", None) or "awg3.1"
         meta["listenPort"] = 55424
         meta["amneziaVpnUri"] = build_amnezia_awg_vpn_uri(
             client_config,
             host=plan.entry.server_host,
             port=55424,
             description=f"Hoplyra {tag}",
+            awg_version=getattr(plan.entry, "awg_version", None) or "awg3.1",
         )
     stripped = client_config.strip()
     if stripped.startswith("vless://"):

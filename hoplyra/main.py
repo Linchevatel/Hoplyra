@@ -779,6 +779,7 @@ class ChainHopRequest(BaseModel):
     serverId: str
     transport: str | None = None
     xrayBypass: bool = False
+    awgVersion: str | None = None
 
 
 class DeployChainRequest(BaseModel):
@@ -799,6 +800,8 @@ def _hop_payload(hops: list[ChainHopRequest]) -> list[dict[str, Any]]:
             hop["transport"] = h.transport
         if h.protocol == "xray" and h.xrayBypass:
             hop["xrayBypass"] = True
+        if h.protocol == "awg" and h.awgVersion:
+            hop["awgVersion"] = h.awgVersion
         out.append(hop)
     return out
 

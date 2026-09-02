@@ -90,7 +90,7 @@ def build_amnezia_awg_package(
     if kv.get("PresharedKey"):
         last_config["psk_key"] = kv["PresharedKey"]
 
-    awg_ver_clean = (awg_version or "awg2.0").lower().strip()
+    awg_ver_clean = (awg_version or "awg3.1").lower().strip()
     is_v3 = awg_ver_clean in ("awg3.1", "3.1", "3")
     is_v2 = awg_ver_clean in ("awg2.0", "2.0", "2")
     container_name = AWG2_CONTAINER if (is_v2 or is_v3) else "amnezia-awg"
@@ -125,7 +125,7 @@ def build_amnezia_awg_vpn_uri(
     host: str,
     port: int,
     description: str,
-    awg_version: str = "awg2.0",
+    awg_version: str = "awg3.1",
 ) -> str:
     package = build_amnezia_awg_package(
         client_conf,
