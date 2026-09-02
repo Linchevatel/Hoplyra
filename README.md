@@ -76,8 +76,8 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 | Platform | Download |
 |---|---|
-| **Linux x86_64** | [AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.3/Hoplyra-1.3.3-x86_64.AppImage) |
-| **Windows x64** | [portable exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.3.3/Hoplyra-1.3.3-x64-portable.exe) |
+| **Linux x86_64** | [AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.4.2/Hoplyra-1.4.2-x86_64.AppImage) |
+| **Windows x64** | [portable exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.4.2/Hoplyra-1.4.2-x64-portable.exe) |
 
 Файлы также лежат в `desktop/dist/` (Git LFS).
 
@@ -85,11 +85,11 @@ Linux:
 
 ```bash
 sudo apt install libfuse2   # Ubuntu/Debian, if AppImage won't start
-chmod +x Hoplyra-1.3.3-x86_64.AppImage
-./Hoplyra-1.3.3-x86_64.AppImage
+chmod +x Hoplyra-1.4.2-x86_64.AppImage
+./Hoplyra-1.4.2-x86_64.AppImage
 ```
 
-Windows: run `Hoplyra-1.3.3-x64-portable.exe` (portable, no installer).
+Windows: run `Hoplyra-1.4.2-x64-portable.exe` (portable, no installer).
 
 Requires **64-bit Linux, glibc 2.35+** (Ubuntu 22.04+, Debian 12+).
 

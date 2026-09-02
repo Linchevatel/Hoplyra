@@ -109,7 +109,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="v1.3.3"
+            TAG="v1.4.2"
           fi
           cd release-files
           sha256sum * > SHA256SUMS
