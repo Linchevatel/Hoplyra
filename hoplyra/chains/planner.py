@@ -14,6 +14,7 @@ class HopSpec:
     transport: str | None = None
     xray_bypass: bool = False
     awg_version: str | None = None
+    awg_params: dict[str, Any] | None = None
 
 
 @dataclass
@@ -48,6 +49,27 @@ def validate_chain(hops: list[dict[str, Any]]) -> None:
                     f"Звенья {i + 1} и {i + 2} на одном VPS — разрешено только если одно из них Tor"
                 )
 
+    # Non-adjacent visits need independent host-network resources. VPN and
+    # repeated Tor roles still own fixed interfaces/transparent-proxy ports.
+    visits: dict[str, list[int]] = {}
+    for i, hop in enumerate(hops):
+        visits.setdefault(hop["serverId"], []).append(i)
+    repeated = {sid for sid, indices in visits.items()
+                if any(b > a + 1 for a, b in zip(indices, indices[1:]))}
+    if repeated:
+        if len({h["id"] for h in hops}) != len(hops):
+            raise ValueError("Повторяющиеся идентификаторы звеньев")
+        if len(hops) > 100:
+            raise ValueError("Слишком много повторных посещений")
+        if any(h["protocol"] not in ("xray", "tor") for h in hops):
+            raise ValueError("Повторные посещения поддерживаются только для Xray/Tor")
+        if any(h["protocol"] != "xray" for h in hops if h["serverId"] in repeated):
+            raise ValueError("Повторный сервер конфликтует с фиксированными портами Tor")
+        if any(a["serverId"] == b["serverId"] for a, b in zip(hops, hops[1:])):
+            raise ValueError("Повторные посещения нельзя смешивать с локальными ролями Tor")
+        if any(a["protocol"] == b["protocol"] == "tor" for a, b in zip(hops, hops[1:])):
+            raise ValueError("Последовательные Tor-транспорты не поддерживаются")
+
 
 def build_plan(hops: list[dict[str, Any]], server_hosts: dict[str, str]) -> ChainPlan:
     validate_chain(hops)
@@ -61,6 +83,7 @@ def build_plan(hops: list[dict[str, Any]], server_hosts: dict[str, str]) -> Chai
             transport=h.get("transport"),
             xray_bypass=bool(h.get("xrayBypass")),
             awg_version=h.get("awgVersion"),
+            awg_params=h.get("awgParams") or h.get("awg_params"),
         )
         for i, h in enumerate(hops)
     ]

@@ -188,14 +188,18 @@ def _add_client_socks(xray_cfg: dict[str, Any], *, port: int, user: str, passwor
         if CLIENT_SOCKS_TAG not in rule.get("inboundTag", [])
     ]
     has_exit_direct = any(o.get("tag") == "exit-direct" for o in xray_cfg.get("outbounds", []))
-    if has_exit_direct and outbound == "exit":
+    tor_path = any(o.get("tag") in ("tor", "tor-udp-block") or
+                   o.get("proxySettings", {}).get("tag") == "tor"
+                   for o in xray_cfg.get("outbounds", []))
+    if has_exit_direct or tor_path:
+        xray_cfg.setdefault("outbounds", []).append({"tag": "client-tor-udp-block", "protocol": "blackhole"})
         rules.insert(
             0,
             {
                 "type": "field",
                 "network": "udp",
                 "inboundTag": [CLIENT_SOCKS_TAG],
-                "outboundTag": "exit-direct",
+                "outboundTag": "client-tor-udp-block",
             },
         )
         rules.insert(
@@ -305,30 +309,19 @@ def _teardown_3proxy_container(
             podman_compose_down(runner, proxy_dir, _socks_compose_project(config_id), timeout=15)
 
 
-def _cleanup_stale_socks_containers(runner: RemoteRunner, *, keep: str | None = None) -> None:
-    code, out, _ = runner.run(
-        "podman ps -a --format '{{.Names}}' 2>/dev/null | grep '^cv-socks-' || true"
-    )
-    stale = [name.strip() for name in out.splitlines() if name.strip() and name.strip() != keep]
-    if stale:
-        quoted = " ".join(shlex.quote(name) for name in stale)
-        runner.run(
-            f"podman rm -f {quoted} 2>/dev/null || docker rm -f {quoted} 2>/dev/null || true",
-            timeout=60,
-        )
-    runner.run(
-        "iptables-save 2>/dev/null | awk '/hoplyra-socks/ && /^-A/ "
-        "{sub(/^-A/,\"-D\"); print}' | while read -r rule; do "
-        "iptables $rule 2>/dev/null || true; done; true",
-        timeout=60,
-    )
+def _cleanup_stale_socks_containers(runner: RemoteRunner, *, config_id: str, keep: str | None = None) -> None:
+    # Legacy names without config ownership cannot safely be removed here.
+    owned = _socks_container_name(config_id)
+    if owned != keep:
+        q = shlex.quote(owned)
+        runner.run(f"podman rm -f {q} 2>/dev/null || docker rm -f {q} 2>/dev/null || true", timeout=60)
 
 
 def _teardown_legacy_xray_sidecar(runner: RemoteRunner, config_id: str, instance_path: str) -> None:
     legacy_dir = f"{instance_path}/socks-gateway"
     if _remote_file_exists(runner, f"{legacy_dir}/docker-compose.yml"):
         podman_compose_down(runner, legacy_dir, f"cv-socks-{_chain_tag(config_id)}")
-    _cleanup_stale_socks_containers(runner, keep=_socks_container_name(config_id))
+    _cleanup_stale_socks_containers(runner, config_id=config_id, keep=_socks_container_name(config_id))
 
 
 def _read_xray_config(runner: RemoteRunner, path: str) -> dict[str, Any]:

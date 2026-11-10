@@ -4,7 +4,7 @@ from __future__ import annotations
 from hoplyra.container_images import ensure_image
 from hoplyra.remote import RemoteRunner
 
-WG_IMAGE = "hoplyra-wg:1"
+WG_IMAGE = "hoplyra-wg:2"
 WG_CONF_IN_CONTAINER = "/etc/wireguard/wg0.conf"
 
 HOST_WG_TEARDOWN = (
@@ -38,13 +38,17 @@ def compose_wg_service(
     *,
     service_name: str = "wg",
     cap_sys_module: bool = False,
+    interface: str = "wg0",
 ) -> str:
+    conf = f"/etc/wireguard/{interface}.conf"
     caps = "[NET_ADMIN, SYS_MODULE]" if cap_sys_module else "[NET_ADMIN]"
     return f"""  {service_name}:
     image: {WG_IMAGE}
     container_name: {container_name}
     network_mode: host
     cap_add: {caps}
+    environment:
+      WG_CONF: {conf}
     volumes:
-      - {host_conf_path}:{WG_CONF_IN_CONTAINER}:ro
+      - {host_conf_path}:{conf}:ro
     restart: unless-stopped"""

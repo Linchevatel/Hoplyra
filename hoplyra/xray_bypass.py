@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hoplyra.hosts import endpoint_host
+
 import base64
 import json
 import secrets
@@ -289,7 +291,7 @@ def build_vless_reality_uri(
 ) -> str:
     tag = remark.replace(" ", "%20")
     return (
-        f"vless://{vless_uuid}@{server_host}:{port}"
+        f"vless://{vless_uuid}@{endpoint_host(server_host)}:{port}"
         f"?encryption=none&flow=xtls-rprx-vision&security=reality"
         f"&sni={server_name}&fp={REALITY_FINGERPRINT}&pbk={public_key}&sid={short_id}&type=tcp"
         f"#{tag}"

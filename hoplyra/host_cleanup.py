@@ -29,6 +29,31 @@ _CHAIN_ROOTS = ("/opt/hoplyra/chains", "/opt/chainvault/chains")
 _INSTANCE_ROOTS = ("/opt/hoplyra/instances", "/opt/chainvault/instances")
 
 
+# Shared legacy interfaces/rules have no instance ownership. Never remove them
+# by default. Callers may opt in only after proving the host is exclusive.
+RUNTIME_SELECT = (
+    "if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then rt=docker; "
+    "elif podman compose version >/dev/null 2>&1 || command -v podman-compose >/dev/null 2>&1; then rt=podman; "
+    "else rt=docker; fi; "
+)
+
+
+def has_other_config_containers(runner: RemoteRunner, config_id: str) -> bool:
+    code, out, _ = runner.run(
+        RUNTIME_SELECT + "$rt ps -a --format '{{.Names}}'", timeout=60
+    )
+    tag = chain_tag_from_config_id(config_id)
+    if code != 0 or any(n.startswith("cv-") and tag not in n for n in out.splitlines()):
+        return True
+    # Native AWG may have no container. Treat other instance directories as
+    # potentially active: conservative, and independent of stale DB status.
+    code, out, _ = runner.run(
+        "for root in /opt/hoplyra/chains /opt/hoplyra/instances /opt/chainvault/chains /opt/chainvault/instances; do "
+        '[ ! -d "$root" ] || find "$root" -mindepth 1 -maxdepth 1 -type d; done', timeout=60
+    )
+    return code != 0 or any(p.rstrip("/").split("/")[-1] != config_id for p in out.splitlines())
+
+
 def _wg_link_cleanup_cmd(config_id: str) -> str:
     roots = " ".join(shlex.quote(f"{root}/{config_id}") for root in _CHAIN_ROOTS)
     return (
@@ -36,31 +61,30 @@ def _wg_link_cleanup_cmd(config_id: str) -> str:
         f'  [ -d "$root" ] || continue; '
         f'  find "$root" -name wg-link.conf 2>/dev/null | while read -r conf; do '
         f'    wg-quick down "$conf" 2>/dev/null || true; '
-        f'    d=$(dirname "$conf"); '
-        f'    (cd "$d" && (podman compose -p wg-link down 2>/dev/null || '
-        f'     podman-compose -p wg-link down 2>/dev/null || true)); '
         f"  done; "
         f"done"
     )
 
 
-def purge_host_artifacts(runner: RemoteRunner, config_id: str, *, chain: bool) -> None:
+def purge_host_artifacts(runner: RemoteRunner, config_id: str, *, chain: bool, exclusive_host: bool = False) -> None:
     tag = chain_tag_from_config_id(config_id)
-    for conf in discover_awg_confs(runner, config_id):
-        awg_quick_down(runner, conf)
+    if exclusive_host:
+        for conf in discover_awg_confs(runner, config_id):
+            awg_quick_down(runner, conf)
     runner.run(f"ip link delete awg_{config_id[:8]} 2>/dev/null || true; ip link delete awg_{config_id.replace('-', '')[:12]} 2>/dev/null || true", timeout=30)
 
-    if chain:
+    if chain and exclusive_host:
         runner.run(_wg_link_cleanup_cmd(config_id), timeout=120)
 
-    runner.run(HOST_WG_TEARDOWN, timeout=60)
-    runner.run(_HOST_ROUTING_CLEANUP, timeout=60)
-    runner.run(_WG_LINK_IPTABLES_CLEANUP, timeout=60)
-    runner.run(f"bash -s << 'EOF'\n{HOST_GATEWAY_IPTABLES_CLEANUP}\nEOF", timeout=120)
+    if exclusive_host:
+        runner.run(HOST_WG_TEARDOWN, timeout=60)
+        runner.run(_HOST_ROUTING_CLEANUP, timeout=60)
+        runner.run(_WG_LINK_IPTABLES_CLEANUP, timeout=60)
+        runner.run(f"bash -s << 'EOF'\n{HOST_GATEWAY_IPTABLES_CLEANUP}\nEOF", timeout=120)
 
     runner.run(
-        f"podman ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -E 'cv-.+-{tag}' | "
-        f"xargs -r podman rm -f 2>/dev/null || true",
+        RUNTIME_SELECT + f"$rt ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -E 'cv-.+-{tag}' | "
+        f"xargs -r $rt rm -f 2>/dev/null || true",
         timeout=300,
     )
 
@@ -95,9 +119,11 @@ def verify_config_purged(
     tag = chain_tag_from_config_id(config_id)
 
     code, out, _ = runner.run(
-        f"podman ps -a --format '{{{{.Names}}}}' 2>/dev/null || true",
+        RUNTIME_SELECT + f"$rt ps -a --format '{{{{.Names}}}}' 2>/dev/null",
         timeout=60,
     )
+    if code != 0:
+        issues.append("container runtime enumeration failed")
     for line in out.splitlines():
         name = line.strip()
         if name.startswith("cv-") and tag in name:

@@ -160,7 +160,9 @@ def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tup
             target.auth_secret,
             "ssh",
             "-o",
-            "BatchMode=yes",
+            "BatchMode=no",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
             "-o",
             "StrictHostKeyChecking=no",
             "-o",
@@ -227,14 +229,18 @@ class RemoteRunner:
 
         last_exc: Exception | None = None
         for attempt in range(max(1, retries)):
+            submitted = False
             try:
                 with ssh_client(self.target) as client:
+                    submitted = True  # Delivery may be uncertain even if exec_command raises.
                     _, stdout, stderr = client.exec_command(command, timeout=timeout)
                     out = stdout.read().decode(errors="replace")
                     err = stderr.read().decode(errors="replace")
                     code = stdout.channel.recv_exit_status()
                     return code, out, err
             except (TimeoutError, paramiko.SSHException, OSError) as exc:
+                if submitted:
+                    raise RuntimeError("SSH command outcome unknown after submission; not retried") from exc
                 last_exc = exc
                 if attempt + 1 < retries:
                     time.sleep(min(5 * (attempt + 1), 15))
@@ -249,7 +255,7 @@ class RemoteRunner:
         assert last_exc is not None
         raise last_exc
 
-    def upload_text(self, remote_path: str, content: str, mode: int = 0o644) -> None:
+    def upload_text(self, remote_path: str, content: str, mode: int = 0o600) -> None:
         if self.target.is_local:
             from pathlib import Path
 
@@ -271,7 +277,7 @@ class RemoteRunner:
             sftp.chmod(remote_path, mode)
             sftp.close()
 
-    def upload_file(self, remote_path: str, local_path: Path | str, *, mode: int = 0o644) -> None:
+    def upload_file(self, remote_path: str, local_path: Path | str, *, mode: int = 0o600) -> None:
         src = Path(local_path)
         if not src.is_file():
             raise FileNotFoundError(str(src))
@@ -401,7 +407,7 @@ def shell_path(path: str) -> str:
 
 
 def mkdir_remote(runner: RemoteRunner, path: str) -> None:
-    runner.run(f"mkdir -p {shell_path(path)}")
+    runner.run(f"mkdir -p {shell_path(path)} && chmod 700 {shell_path(path)}")
 
 
 def wan_wg_forward_up_cmd(wg_iface: str = "wg0") -> str:

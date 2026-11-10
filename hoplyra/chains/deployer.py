@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hoplyra.hosts import endpoint_host
+
 import json
 import re
 import secrets
@@ -17,7 +19,14 @@ from hoplyra.chains.preflight import recheck_runners_online
 from hoplyra.deploy_cancel import check_deploy_cancel
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_up, wan_wg_forward_down_cmd, wan_wg_forward_up_cmd
 from hoplyra.wg_keys import generate_wg_keypair
-from hoplyra.awg_params import build_awg_client_conf, build_awg_server_conf, generate_awg2_params, generate_awg_params
+from hoplyra.awg_params import (
+    AwgObfuscationParams,
+    build_awg_client_conf,
+    build_awg_server_conf,
+    generate_auto_awg_params,
+    generate_awg2_params,
+    generate_awg_params,
+)
 from hoplyra.awg_runtime import awg_quick_up, ensure_awg_on_host
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
 from hoplyra.wg_keys import generate_wg_psk
@@ -126,7 +135,7 @@ def _compose_project_at(config_id: str, workdir: str) -> str:
 
 
 def _ensure_compose_images(runner: RemoteRunner, compose: str) -> None:
-    if "hoplyra-wg:1" in compose:
+    if "hoplyra-wg:2" in compose:
         ensure_wg_image(runner)
     if "hoplyra-xray:1" in compose:
         ensure_xray_image(runner)
@@ -148,11 +157,31 @@ class ChainDeployer:
         plan: ChainPlan,
         config_id: str,
         on_hop_status: Any | None = None,
+        on_server_touched: Any | None = None,
     ) -> ChainDeployResult:
+        previous: dict[str, int] = {}
+        repeated_visit = False
+        for hop in plan.hops:
+            if hop.server_id in previous and hop.index > previous[hop.server_id] + 1:
+                repeated_visit = True
+            previous[hop.server_id] = hop.index
+        if repeated_visit:
+            return self._deploy_repeated_visits(
+                runners, plan, config_id, on_hop_status, on_server_touched
+            )
+        # Resource ownership is independent of entry-first UI progress.
+        touched: set[str] = set()
+
+        def touch(server_id: str) -> None:
+            if server_id not in touched:
+                if on_server_touched:
+                    on_server_touched(server_id)
+                touched.add(server_id)
+
         downstream: ExitEndpoint | None = None
         client_config = ""
         entry_path = ""
-        entry_container = f"cv-chain-{_chain_tag(config_id)}"
+        entry_container = f"cv-chain-{self._resource_tag(config_id)}"
         bypass_meta: dict[str, Any] = {}
 
         colocated_entry_exit = plan.entry.server_id == plan.exit.server_id
@@ -167,6 +196,7 @@ class ChainDeployer:
             and plan.entry.server_id != plan.exit.server_id
         )
         if entry_awg_prefetch:
+            touch(plan.entry.server_id)
             entry_runner = runners[plan.entry.server_id]
             client_config, entry_path, hop_bypass_meta = self._deploy_entry_awg_only(
                 entry_runner, config_id, plan
@@ -182,6 +212,7 @@ class ChainDeployer:
             runner = runners[server_id]
             is_last = idx == len(plan.servers_order) - 1
 
+            touch(server_id)
             if single_vps_chain:
                 client_config, entry_path, hop_bypass_meta = self._deploy_single_server_chain(
                     runner, config_id, plan, server_hops
@@ -192,6 +223,8 @@ class ChainDeployer:
                         hop_status.mark_done(hop.id)
             elif is_last and server_id == plan.entry.server_id:
                 if needs_wg_link(plan):
+                    touch(plan.entry.server_id)
+                    touch(plan.exit.server_id)
                     self._deploy_wg_link(
                         runners[plan.entry.server_id],
                         runners[plan.exit.server_id],
@@ -230,6 +263,8 @@ class ChainDeployer:
                         hop_status.mark_done(hop.id)
 
         if needs_wg_link(plan):
+            touch(plan.entry.server_id)
+            touch(plan.exit.server_id)
             self._apply_wg_link_forward(runners, plan)
 
         if not client_config:
@@ -243,9 +278,58 @@ class ChainDeployer:
             bypass_meta=bypass_meta or None,
         )
 
+    def _resource_tag(self, config_id: str) -> str:
+        tag = _chain_tag(config_id)
+        index = getattr(self, "_hop_index", None)
+        return tag if index is None else f"{tag}-h{index}"
+
+    def _listener_port(self, default: int) -> int:
+        index = getattr(self, "_hop_index", None)
+        return default if index is None else 20000 + index
+
+    def _deploy_repeated_visits(
+        self, runners, plan, config_id, on_hop_status, on_server_touched
+    ) -> ChainDeployResult:
+        # Per-visit workers avoid mutable resource context leaking to another
+        # deployment. Keep the original config root for rollback ownership.
+        from hoplyra.chains.planner import validate_chain
+        validate_chain([{"id": h.id, "protocol": h.protocol, "serverId": h.server_id}
+                        for h in plan.hops])
+        downstream = None
+        touched: set[str] = set()
+        progress = SequentialHopStatus(plan.hops, on_hop_status) if on_hop_status else None
+        if progress:
+            progress.start()
+        bypass_meta = {}
+        for hop in reversed(plan.hops):
+            check_deploy_cancel(config_id)
+            recheck_runners_online(runners)
+            if hop.server_id not in touched:
+                if on_server_touched:
+                    on_server_touched(hop.server_id)
+                touched.add(hop.server_id)
+            worker = ChainDeployer(self.data_dir)
+            worker._hop_index = hop.index
+            runner = runners[hop.server_id]
+            if hop.index == 0:
+                client, path, bypass_meta = worker._deploy_entry_server(
+                    runner, config_id, plan, [hop], downstream)
+                container = f"cv-xentry-{worker._resource_tag(config_id)}"
+            elif hop.index == len(plan.hops) - 1:
+                downstream = worker._deploy_exit_server(runner, config_id, plan, [hop], downstream)
+            else:
+                downstream = worker._deploy_relay_server(runner, config_id, plan, [hop], downstream)
+            if progress:
+                progress.mark_done(hop.id)
+        return ChainDeployResult(client, path, container,
+                                 _chain_result_meta(plan, client, config_id=config_id),
+                                 bypass_meta or None)
+
     def _instance(self, runner: RemoteRunner, config_id: str, suffix: str = "") -> str:
         path = _chain_dir(config_id, runner.target.is_local, self.data_dir)
-        return f"{path}{suffix}"
+        index = getattr(self, "_hop_index", None)
+        visit = "" if index is None else f"/hop-{index}"
+        return f"{path}{visit}{suffix}"
 
     def _gateway_depends_on(self, entry_protocol: str) -> str | None:
         if entry_protocol == "awg":
@@ -290,7 +374,7 @@ class ChainDeployer:
             "inbounds": [
                 {
                     "tag": "socks-exit",
-                    "port": XRAY_EXIT_PORT,
+                    "port": self._listener_port(XRAY_EXIT_PORT),
                     "listen": "0.0.0.0" if not local_host else "127.0.0.1",
                     "protocol": "socks",
                     "settings": {"auth": "password", "accounts": [{"user": user, "pass": password}], "udp": True},
@@ -300,13 +384,13 @@ class ChainDeployer:
             "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4"}}],
         }
         service = compose_xray_service(
-            f"cv-xexit-{_chain_tag(config_id)}",
+            f"cv-xexit-{self._resource_tag(config_id)}",
             path,
             service_name="xray-exit",
             config_file="exit-config.json",
         )
         host = "127.0.0.1" if local_host else hop.server_host
-        endpoint = ExitEndpoint(host=host, port=XRAY_EXIT_PORT, auth_user=user, auth_pass=password)
+        endpoint = ExitEndpoint(host=host, port=self._listener_port(XRAY_EXIT_PORT), auth_user=user, auth_pass=password)
         files = [
             ("exit-config.json", json.dumps(xray_cfg, indent=2), 0o644),
         ]
@@ -331,12 +415,12 @@ class ChainDeployer:
         entry_runner = runners[plan.entry.server_id]
         exit_runner = runners[plan.exit.server_id]
         entry_runner.run(
-            "iptables -I FORWARD 1 -i tun0 -o wg0 -j ACCEPT 2>/dev/null; "
-            "iptables -I FORWARD 2 -i wg0 -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; true"
+            "iptables -I FORWARD 1 -i tun0 -o wg-link -j ACCEPT 2>/dev/null; "
+            "iptables -I FORWARD 2 -i wg-link -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; true"
         )
         exit_runner.run(
-            "iptables -I FORWARD 1 -i wg0 -j ACCEPT 2>/dev/null; "
-            f"{wan_wg_forward_up_cmd()}"
+            "iptables -I FORWARD 1 -i wg-link -j ACCEPT 2>/dev/null; "
+            f"{wan_wg_forward_up_cmd("wg-link")}"
         )
 
     def _deploy_wg_link(
@@ -355,14 +439,14 @@ class ChainDeployer:
         entry_priv, entry_pub = generate_wg_keypair()
         link_port = 51822
 
-        wan_fwd_up = wan_wg_forward_up_cmd()
-        wan_fwd_down = wan_wg_forward_down_cmd()
+        wan_fwd_up = wan_wg_forward_up_cmd("wg-link")
+        wan_fwd_down = wan_wg_forward_down_cmd("wg-link")
         exit_conf = f"""[Interface]
 Address = 10.88.0.1/30
 ListenPort = {link_port}
 PrivateKey = {exit_priv}
-PostUp = {nat_postup("10.88.0.0/30")}; iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg0 -j ACCEPT; {wan_fwd_up}
-PostDown = {nat_postdown("10.88.0.0/30")}; iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true; {wan_fwd_down}
+PostUp = {nat_postup("10.88.0.0/30")}; iptables -C FORWARD -i wg-link -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg-link -j ACCEPT; {wan_fwd_up}
+PostDown = {nat_postdown("10.88.0.0/30")}; iptables -D FORWARD -i wg-link -j ACCEPT 2>/dev/null || true; {wan_fwd_down}
 [Peer]
 PublicKey = {entry_pub}
 AllowedIPs = 10.88.0.2/32, 10.8.0.0/24
@@ -375,25 +459,27 @@ PostUp = sysctl -w net.ipv4.ip_forward=1 || true; iptables -C FORWARD -i tun0 -o
 PostDown = ip rule del iif tun0 table 100 priority 100 2>/dev/null || true; ip route flush table 100 2>/dev/null || true; iptables -D FORWARD -i tun0 -o %i -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -i %i -o tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true; iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o %i -j MASQUERADE 2>/dev/null || true
 [Peer]
 PublicKey = {exit_pub}
-Endpoint = {plan.exit.server_host}:{link_port}
+Endpoint = {endpoint_host(plan.exit.server_host)}:{link_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
         exit_compose = (
             "services:\n"
             + compose_wg_service(
-                f"cv-link-exit-{_chain_tag(config_id)}",
+                f"cv-link-exit-{self._resource_tag(config_id)}",
                 f"{exit_path}/wg-link.conf",
                 service_name="wg-link",
+                interface="wg-link",
             )
             + "\n"
         )
         entry_compose = (
             "services:\n"
             + compose_wg_service(
-                f"cv-link-entry-{_chain_tag(config_id)}",
+                f"cv-link-entry-{self._resource_tag(config_id)}",
                 f"{entry_path}/wg-link.conf",
                 service_name="wg-link",
+                interface="wg-link",
             )
             + "\n"
         )
@@ -434,7 +520,7 @@ AllowedIPs = 10.77.0.2/32
         compose = (
             "services:\n"
             + compose_wg_service(
-                f"cv-wgexit-{_chain_tag(config_id)}",
+                f"cv-wgexit-{self._resource_tag(config_id)}",
                 f"{path}/wg.conf",
                 service_name="wg-exit",
             )
@@ -451,22 +537,22 @@ AllowedIPs = 10.77.0.2/32
         self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec, plan: ChainPlan | None = None
     ) -> ExitEndpoint:
         transport = _ovpn_transport(hop, plan=plan)
-        container = f"cv-ovpn-exit-{_chain_tag(config_id)}"
+        container = f"cv-ovpn-exit-{self._resource_tag(config_id)}"
         ensure_openvpn_image(runner)
         mkdir_remote(runner, path)
         runner.upload_text(f"{path}/server.conf", server_conf_content(transport))
         compose = f"services:\n{compose_service(container, path, service_name='openvpn-exit')}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
-        ensure_openvpn_port_free(runner, chain_tag=_chain_tag(config_id))
+        ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         provision_openvpn_instance(runner, path, container, transport)
         return ExitEndpoint(host=hop.server_host, port=1194)
 
     def _deploy_tor_exit(self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec) -> ExitEndpoint:
         torrc = """ClientOnly 1
-SocksPort 0.0.0.0:9050
+SocksPort 127.0.0.1:9050
 TransPort 0.0.0.0:9040
-DNSPort 0.0.0.0:9053
+DNSPort 127.0.0.1:9053
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 Log err file /dev/null
@@ -474,7 +560,7 @@ Log err file /dev/null
         compose = (
             "services:\n"
             + compose_tor_service(
-                f"cv-tor-exit-{_chain_tag(config_id)}",
+                f"cv-tor-exit-{self._resource_tag(config_id)}",
                 path,
                 service_name="tor-exit",
                 tor_data_volume=True,
@@ -486,10 +572,10 @@ Log err file /dev/null
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
-        return ExitEndpoint(
-            host=hop.server_host,
-            port=TOR_SOCKS_PORT,
-            tor_dynamic_exit=True,
+        # Tor accepts arbitrary SOCKS passwords: enforce auth in an Xray front.
+        return self._deploy_xray_relay(
+            runner, f"{path}/socks-front", config_id, hop,
+            ExitEndpoint(host="127.0.0.1", port=TOR_SOCKS_PORT, tor_dynamic_exit=True),
         )
 
     def _deploy_relay_server(
@@ -569,6 +655,7 @@ Log err file /dev/null
                 entry_if=entry_if,
                 entry_subnet=subnet,
                 local_tor=local_tor or bool(downstream and downstream.direct),
+                tor_chain=any(h.protocol == "tor" for h in plan.hops),
                 depends_on=None,
             )
             self._upload_gateway_files(runner, path)
@@ -673,6 +760,7 @@ Log err file /dev/null
                 entry_if=entry_if,
                 entry_subnet=subnet,
                 local_tor=local_tor or bool(downstream and downstream.direct),
+                tor_chain=any(h.protocol == "tor" for h in plan.hops),
                 depends_on=None if entry.protocol == "awg" else self._gateway_depends_on(entry.protocol),
             )
             self._upload_gateway_files(runner, path)
@@ -685,14 +773,14 @@ Log err file /dev/null
             _ensure_compose_images(runner, compose)
             runner.upload_text(f"{path}/docker-compose.yml", compose)
             if entry.protocol == "openvpn":
-                ensure_openvpn_port_free(runner, chain_tag=_chain_tag(config_id))
+                ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
             if entry.protocol == "openvpn":
                 ensure_openvpn_image(runner)
                 provision_openvpn_instance(
                     runner,
                     path,
-                    f"cv-ovpn-entry-{_chain_tag(config_id)}",
+                    f"cv-ovpn-entry-{self._resource_tag(config_id)}",
                     _ovpn_transport(plan.entry),
                 )
                 client_conf = build_client_ovpn(
@@ -722,7 +810,14 @@ Log err file /dev/null
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
         ver_label = getattr(hop, "awg_version", None) or "awg3.1"
-        awg = generate_awg_params(ver_label)
+        custom_params = getattr(hop, "awg_params", None)
+        if isinstance(custom_params, AwgObfuscationParams):
+            awg = custom_params
+        elif isinstance(custom_params, dict):
+            awg = generate_auto_awg_params(ver_label, overrides=custom_params)
+        else:
+            awg = generate_auto_awg_params(ver_label)
+        setattr(hop, "awg_params", awg)
         psk = generate_wg_psk()
         if gateway_mode:
             post_up = "sysctl -w net.ipv4.ip_forward=1 || true"
@@ -779,12 +874,12 @@ Address = 10.66.66.2/32
 DNS = 1.1.1.1
 [Peer]
 PublicKey = {server_pub}
-Endpoint = {hop.server_host}:51820
+Endpoint = {endpoint_host(hop.server_host)}:51820
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
         service = compose_wg_service(
-            f"cv-chain-wg-{_chain_tag(config_id)}",
+            f"cv-chain-wg-{self._resource_tag(config_id)}",
             f"{path}/wg0.conf",
         )
         return client_conf, service, wg_conf
@@ -793,7 +888,7 @@ PersistentKeepalive = 25
         self, path: str, config_id: str, hop: HopSpec, *, skip_wan_nat: bool = False
     ) -> tuple[str, str, list[tuple[str, str, int]]]:
         transport = _ovpn_transport(hop)
-        container = f"cv-ovpn-entry-{_chain_tag(config_id)}"
+        container = f"cv-ovpn-entry-{self._resource_tag(config_id)}"
         client_stub = (
             f"client\ndev tun\nproto {transport}\nremote {hop.server_host} 1194\n"
             f"resolv-retry infinite\nnobind\npersist-key\npersist-tun\n"
@@ -816,6 +911,7 @@ PersistentKeepalive = 25
         depends_on: str | None,
         *,
         relay_inbound: bool = False,
+        tor_chain: bool = False,
     ) -> str:
         via_tor = local_tor or downstream.direct
         listen_ip = (
@@ -844,9 +940,9 @@ AutomapHostsOnResolve 1
 Log err file /dev/null
 """
         else:
-            torrc = """DataDirectory /var/lib/tor
+            torrc = f"""DataDirectory /var/lib/tor
 SocksPort 127.0.0.1:9050
-DNSPort 127.0.0.1:9053
+DNSPort {listen_ip}:9053
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 Log err file /dev/null
@@ -865,6 +961,10 @@ iptables -t nat -A PREROUTING -i {entry_if} -p udp -s {entry_subnet} --dport 53 
             redirect_block = f"""for i in $(seq 1 30); do ip link show tun0 >/dev/null 2>&1 && break; sleep 2; done
 iptables -t nat -C PREROUTING -i tun0 -p tcp -s {entry_subnet} -j REDIRECT --to-ports {XRAY_ENTRY_PORT} 2>/dev/null ||
 iptables -t nat -A PREROUTING -i tun0 -p tcp -s {entry_subnet} -j REDIRECT --to-ports {XRAY_ENTRY_PORT}
+"""
+        if entry_if and entry_subnet and (tor_chain or local_tor or via_tor or downstream.via_tor or downstream.tor_dynamic_exit):
+            redirect_block += f"""iptables -C FORWARD -i {entry_if} -s {entry_subnet} -p udp -j REJECT 2>/dev/null ||
+iptables -I FORWARD 1 -i {entry_if} -s {entry_subnet} -p udp -j REJECT
 """
         tor_start = ""
         if local_tor:
@@ -904,12 +1004,11 @@ sleep 1
 set -uo pipefail
 sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
 sysctl -w net.ipv4.conf.all.route_localnet=1 2>/dev/null || true
-{stale_xray_kill}{redirect_block}{ovpn_forward}{tor_start}xray run -c {GATEWAY_MOUNT}/config.json &
-tail -f /dev/null
+{stale_xray_kill}{redirect_block}{ovpn_forward}{tor_start}exec xray run -c {GATEWAY_MOUNT}/config.json
 """
         self._pending_gateway_files = (xray_cfg, torrc if local_tor else None, start_sh)
         return compose_gateway_service(
-            f"cv-gateway-{_chain_tag(config_id)}",
+            f"cv-gateway-{self._resource_tag(config_id)}",
             path,
             depends_on=depends_on,
             tor_data_volume=local_tor,
@@ -926,17 +1025,17 @@ tail -f /dev/null
         del self._pending_gateway_files
 
     def _tor_sidecar_bundle(
-        self, path: str, config_id: str
+        self, path: str, config_id: str, *, dns_ip: str = "127.0.0.1"
     ) -> tuple[str, list[tuple[str, str, int]]]:
-        torrc = """DataDirectory /var/lib/tor
+        torrc = f"""DataDirectory /var/lib/tor
 SocksPort 127.0.0.1:9050
-DNSPort 127.0.0.1:9053
+DNSPort {dns_ip}:9053
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
 Log err file /dev/null
 """
         service = compose_tor_service(
-            f"cv-tor-sidecar-{_chain_tag(config_id)}",
+            f"cv-tor-sidecar-{self._resource_tag(config_id)}",
             f"{path}/tor-sidecar",
             service_name="tor-sidecar",
             tor_data_volume=True,
@@ -1030,10 +1129,20 @@ Log err file /dev/null
                 entry_if=entry_if,
                 entry_subnet=subnet,
                 local_tor=local_tor or bool(downstream and downstream.direct),
+                tor_chain=any(h.protocol == "tor" for h in plan.hops),
                 depends_on=None if entry.protocol == "awg" else self._gateway_depends_on(entry.protocol),
             )
             self._upload_gateway_files(runner, path)
             services.append(gw_svc)
+
+        # WG/OpenVPN gateways wait for Tor; AWG gateway starts its own Tor.
+        if local_tor and entry.protocol in ("wg", "openvpn"):
+            tor_svc, tor_files = self._tor_sidecar_bundle(
+                path, config_id, dns_ip="10.66.66.1" if entry.protocol == "wg" else "10.8.0.1"
+            )
+            for name, content, mode in tor_files:
+                runner.upload_text(f"{path}/{name}", content, mode)
+            services.append(tor_svc)
 
         if entry.protocol == "awg":
             client_conf, _, awg_conf = self._awg_entry_bundle(path, config_id, plan.entry, subnet or "10.9.1.0/24")
@@ -1072,14 +1181,14 @@ Log err file /dev/null
         _ensure_compose_images(runner, compose)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         if entry.protocol == "openvpn" or exit_hop.protocol == "openvpn":
-            ensure_openvpn_port_free(runner, chain_tag=_chain_tag(config_id))
+            ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         ensure_openvpn_image(runner)
         if entry.protocol == "openvpn":
             provision_openvpn_instance(
                 runner,
                 path,
-                f"cv-ovpn-entry-{_chain_tag(config_id)}",
+                f"cv-ovpn-entry-{self._resource_tag(config_id)}",
                 _ovpn_transport(entry),
             )
             client_conf = build_client_ovpn(
@@ -1092,7 +1201,7 @@ Log err file /dev/null
             provision_openvpn_instance(
                 runner,
                 path,
-                f"cv-ovpn-exit-{_chain_tag(config_id)}",
+                f"cv-ovpn-exit-{self._resource_tag(config_id)}",
                 _ovpn_transport(exit_hop),
             )
         return client_conf, path, bypass_meta
@@ -1176,7 +1285,7 @@ Log err file /dev/null
                     "port": XRAY_SOCKS_PORT,
                     "listen": "0.0.0.0",
                     "protocol": "socks",
-                    "settings": {"auth": "noauth", "udp": False},
+                    "settings": {"auth": "password", "accounts": [{"user": "chain", "pass": secrets.token_urlsafe(32)}], "udp": False},
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 }
             )
@@ -1197,12 +1306,15 @@ Log err file /dev/null
                     "port": XRAY_SOCKS_PORT,
                     "listen": awg_ip,
                     "protocol": "socks",
-                    "settings": {"auth": "noauth", "udp": False},
+                    "settings": {"auth": "password", "accounts": [{"user": "chain", "pass": secrets.token_urlsafe(32)}], "udp": False},
                     "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
                 }
             )
 
         rules = []
+        if via_tor or downstream.via_tor or downstream.tor_dynamic_exit:
+            outbounds.append({"tag": "tor-udp-block", "protocol": "blackhole"})
+            rules.append({"type": "field", "network": "udp", "outboundTag": "tor-udp-block"})
         if relay_inbound:
             rules.append(
                 {"type": "field", "inboundTag": ["relay-socks"], "outboundTag": "exit"}
@@ -1227,19 +1339,9 @@ Log err file /dev/null
         inbound_tag: str = "vless-in",
         via_tor: bool,
     ) -> None:
-        if via_tor and downstream and not downstream.direct:
-            exit_servers: list[dict] = [{"address": downstream.host, "port": downstream.port}]
-            if downstream.auth_user:
-                exit_servers[0]["users"] = [
-                    {"user": downstream.auth_user, "pass": downstream.auth_pass}
-                ]
-            xray_cfg["outbounds"].append(
-                {
-                    "tag": "exit-direct",
-                    "protocol": "socks",
-                    "settings": {"servers": exit_servers},
-                }
-            )
+        if via_tor or (downstream and (downstream.via_tor or downstream.tor_dynamic_exit)):
+            # Tor cannot carry UDP: never create a direct fallback.
+            xray_cfg["outbounds"].append({"tag": "tor-udp-block", "protocol": "blackhole"})
             xray_cfg["routing"] = {
                 "domainStrategy": "AsIs",
                 "rules": [
@@ -1253,7 +1355,7 @@ Log err file /dev/null
                         "type": "field",
                         "network": "udp",
                         "inboundTag": [inbound_tag],
-                        "outboundTag": "exit-direct",
+                        "outboundTag": "tor-udp-block",
                     },
                 ],
             }
@@ -1284,6 +1386,10 @@ Log err file /dev/null
             depends_on=None if entry_subnet else None,
             relay_inbound=entry_subnet is None,
         )
+        relay_account = (
+            self._pending_gateway_files[0]["inbounds"][0]["settings"]["accounts"][0]
+            if entry_subnet is None else None
+        )
         self._upload_gateway_files(runner, path)
         compose = f"services:\n{gw_svc}\nvolumes:\n  tor-data:\n"
         _ensure_compose_images(runner, compose)
@@ -1292,7 +1398,7 @@ Log err file /dev/null
         host = runner.target.host if hop else "127.0.0.1"
         if entry_subnet:
             return ExitEndpoint(host=host, port=XRAY_SOCKS_PORT, via_tor=True)
-        return ExitEndpoint(host=host, port=XRAY_SOCKS_PORT)
+        return ExitEndpoint(host=host, port=XRAY_SOCKS_PORT, auth_user=relay_account["user"], auth_pass=relay_account["pass"])
 
     def _deploy_xray_relay(
         self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec, downstream: ExitEndpoint
@@ -1301,10 +1407,11 @@ Log err file /dev/null
         xray_cfg = self._xray_chain_config(
             downstream, via_tor=via_tor, entry_redirect=False, relay_inbound=True
         )
+        xray_cfg["inbounds"][0]["port"] = self._listener_port(XRAY_SOCKS_PORT)
         compose = (
             "services:\n"
             + compose_xray_service(
-                f"cv-xrelay-{_chain_tag(config_id)}",
+                f"cv-xrelay-{self._resource_tag(config_id)}",
                 path,
                 service_name="xray-relay",
                 config_file="config.json",
@@ -1315,7 +1422,9 @@ Log err file /dev/null
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
-        return ExitEndpoint(host=hop.server_host, port=XRAY_SOCKS_PORT)
+        account = xray_cfg["inbounds"][0]["settings"]["accounts"][0]
+        return ExitEndpoint(host=hop.server_host, port=self._listener_port(XRAY_SOCKS_PORT),
+                            auth_user=account["user"], auth_pass=account["pass"])
 
     def _deploy_awg_entry(
         self,
@@ -1384,14 +1493,14 @@ Address = 10.66.66.2/32
 DNS = 1.1.1.1
 [Peer]
 PublicKey = {server_pub}
-Endpoint = {hop.server_host}:51820
+Endpoint = {endpoint_host(hop.server_host)}:51820
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
         compose = (
             "services:\n"
             + compose_wg_service(
-                f"cv-chain-wg-{_chain_tag(config_id)}",
+                f"cv-chain-wg-{self._resource_tag(config_id)}",
                 f"{path}/wg0.conf",
             )
             + "\n"
@@ -1414,7 +1523,7 @@ PersistentKeepalive = 25
             downstream
             and ((local_tor and not downstream.direct) or downstream.direct)
         )
-        chain_remark = f"Chain-{_chain_tag(config_id)}"
+        chain_remark = f"Chain-{self._resource_tag(config_id)}"
         bypass_meta: dict[str, Any] = {}
 
         if hop.xray_bypass:
@@ -1457,7 +1566,7 @@ PersistentKeepalive = 25
                 vless_uri=vless_uri,
             )
             service = compose_xray_service(
-                f"cv-xentry-{_chain_tag(config_id)}",
+                f"cv-xentry-{self._resource_tag(config_id)}",
                 path,
                 service_name="xray-entry",
                 config_file="entry-config.json",
@@ -1515,16 +1624,17 @@ PersistentKeepalive = 25
                 "outbounds": [{"protocol": "freedom"}],
             }
         service = compose_xray_service(
-            f"cv-xentry-{_chain_tag(config_id)}",
+            f"cv-xentry-{self._resource_tag(config_id)}",
             path,
             service_name="xray-entry",
             config_file="entry-config.json",
             tls_cn=hop.server_host,
             depends_on="tor-sidecar" if local_tor else None,
         )
+        # Generated TLS certificate is self-signed; explicit client opt-in is required.
         vless_uri = (
-            f"vless://{vless_uuid}@{hop.server_host}:443"
-            f"?encryption=none&security=tls&type=tcp#Chain-{_chain_tag(config_id)}"
+            f"vless://{vless_uuid}@{endpoint_host(hop.server_host)}:443"
+            f"?encryption=none&security=tls&allowInsecure=1&type=tcp#Chain-{self._resource_tag(config_id)}"
         )
         files = [
             ("entry-config.json", json.dumps(xray_cfg, indent=2), 0o644),
@@ -1576,6 +1686,15 @@ def _hop_meta_for_storage(h: HopSpec, plan: ChainPlan) -> dict[str, Any]:
         hop["xrayBypass"] = True
     if h.protocol == "awg":
         hop["awgVersion"] = getattr(h, "awg_version", None) or "awg3.1"
+        custom_params = getattr(h, "awg_params", None)
+        if custom_params:
+            hop["awgParams"] = (
+                custom_params.as_meta()
+                if hasattr(custom_params, "as_meta")
+                else custom_params
+            )
+    if "awgParams" in hop:
+        hop["awgMode"] = hop["awgParams"].get("obfuscationMode", "auto")
     return hop
 
 
@@ -1591,14 +1710,23 @@ def _chain_result_meta(plan: ChainPlan, client_config: str, *, config_id: str = 
     if plan.entry.protocol == "awg":
         tag = _chain_tag(config_id) if config_id else "chain"
         meta["hostAwg"] = True
-        meta["awgVersion"] = getattr(plan.entry, "awg_version", None) or "awg3.1"
+        ver = getattr(plan.entry, "awg_version", None) or "awg3.1"
+        meta["awgVersion"] = ver
         meta["listenPort"] = 55424
+        custom_params = getattr(plan.entry, "awg_params", None)
+        if custom_params:
+            meta["awgParams"] = (
+                custom_params.as_meta()
+                if hasattr(custom_params, "as_meta")
+                else custom_params
+            )
+        meta["awgMode"] = (meta.get("awgParams") or {}).get("obfuscationMode", "auto")
         meta["amneziaVpnUri"] = build_amnezia_awg_vpn_uri(
             client_config,
             host=plan.entry.server_host,
             port=55424,
             description=f"Hoplyra {tag}",
-            awg_version=getattr(plan.entry, "awg_version", None) or "awg3.1",
+            awg_version=ver,
         )
     stripped = client_config.strip()
     if stripped.startswith("vless://"):

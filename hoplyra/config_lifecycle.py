@@ -6,7 +6,7 @@ import shlex
 from typing import Any
 
 from hoplyra.awg_runtime import awg_quick_down, chain_tag_from_config_id, discover_awg_confs
-from hoplyra.host_cleanup import purge_host_artifacts, verify_config_purged
+from hoplyra.host_cleanup import purge_host_artifacts, verify_config_purged, RUNTIME_SELECT, has_other_config_containers
 from hoplyra.protocols import default_instance_path, get_deployer_for_config
 from hoplyra.remote import RemoteRunner, is_local_host, podman_compose_down
 from hoplyra.socks_proxy import _socks_container_name, _socks_compose_project, _socks_proxy_dir
@@ -28,24 +28,26 @@ def _chain_root(config_id: str) -> str:
 
 
 def _run_chain_compose(runner: RemoteRunner, root: str, *, action: str) -> None:
+    # Match deploy's project names, including the two explicit link projects.
+    from hoplyra.chains.deployer import _compose_project
+    config_id = root.rstrip("/").split("/")[-1]
+    base = _compose_project(config_id)
     root_q = shlex.quote(root)
-    if action == "down":
-        cmd = (
-            f"if [ -d {root_q} ]; then "
-            f"find {root_q} -name docker-compose.yml 2>/dev/null | while read -r f; do "
-            f'  d=$(dirname "$f"); '
-            f'  (cd "$d" && (podman compose down 2>/dev/null || podman-compose down 2>/dev/null || true)); '
-            f"done; fi"
-        )
-    else:
-        cmd = (
-            f"if [ -d {root_q} ]; then "
-            f"find {root_q} -name docker-compose.yml 2>/dev/null | while read -r f; do "
-            f'  d=$(dirname "$f"); '
-            f'  (cd "$d" && (podman compose up -d 2>/dev/null || podman-compose up -d 2>/dev/null || true)); '
-            f"done; fi"
-        )
-    runner.run(cmd, timeout=300)
+    operation = "down" if action == "down" else "up -d"
+    cmd = RUNTIME_SELECT + (
+        f"if [ -d {root_q} ]; then "
+        f"find {root_q} -name docker-compose.yml 2>/dev/null | while read -r f; do "
+        'd=$(dirname "$f"); leaf=$(basename "$d"); '
+        f'project="{base}-$(printf %s "$leaf" | sed "s/[^a-zA-Z0-9_-]/-/g")"; '
+        f'case "$leaf" in link-*) if grep -q cv-link-exit "$f"; then project={base}-link-exit; else project={base}-link-entry; fi;; esac; '
+        f'(cd "$d" && if [ "$rt" = podman ]; then '
+        f'podman compose -p "$project" {operation} || podman-compose -p "$project" {operation}; '
+        f'else docker compose -p "$project" {operation}; fi) || exit $?; '
+        "done; fi"
+    )
+    code, out, err = runner.run(cmd, timeout=300)
+    if code != 0:
+        raise RuntimeError((err or out or "chain lifecycle failed").strip())
 
 
 def stop_remote_config(
@@ -69,15 +71,16 @@ def stop_remote_config(
             row = get_server_row(sid)
             runner = RemoteRunner(server_target(row))
             try:
-                for conf in discover_awg_confs(runner, config_id):
-                    awg_quick_down(runner, conf)
+                if not has_other_config_containers(runner, config_id):
+                    for conf in discover_awg_confs(runner, config_id):
+                        awg_quick_down(runner, conf)
                 _run_chain_compose(runner, root, action="down")
                 if purge:
                     purge_host_artifacts(runner, config_id, chain=True)
                     root_q = shlex.quote(root)
                     runner.run(
-                        f"podman ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -E 'cv-.+-{tag}' | "
-                        f"xargs -r podman rm -f 2>/dev/null || true; "
+                        RUNTIME_SELECT + f"$rt ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -E 'cv-.+-{tag}' | "
+                        f"xargs -r $rt rm -f 2>/dev/null || true; "
                         f"rm -rf {root_q}",
                         timeout=300,
                     )
@@ -116,12 +119,16 @@ def stop_remote_config(
         podman_compose_down(runner, socks_dir, _socks_compose_project(config_id), timeout=15)
 
     deployer = get_deployer_for_config(cfg["protocol"], meta)
-    deployer.stop(runner, config_id, instance_path)
+    if cfg["protocol"] == "awg" and has_other_config_containers(runner, config_id):
+        # Legacy awg0 has no ownership marker; preserve it on shared hosts.
+        awg_quick_down(runner, f"{instance_path}/awg_{config_id[:8]}.conf")
+    else:
+        deployer.stop(runner, config_id, instance_path)
     if purge:
         purge_host_artifacts(runner, config_id, chain=False)
         container = cfg.get("container_name") or f"cv-{cfg['protocol']}-{config_id[:8]}"
         runner.run(
-            f"podman rm -f {shlex.quote(container)} 2>/dev/null || true",
+            RUNTIME_SELECT + f"$rt rm -f {shlex.quote(container)} 2>/dev/null || true",
             timeout=120,
         )
         runner.run(f"rm -rf {shlex.quote(instance_path)}", timeout=120)

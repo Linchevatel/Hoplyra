@@ -151,7 +151,7 @@ if ! has_compose; then
   exit 3
 fi
 
-chmod 755 /opt/hoplyra /opt/hoplyra/instances
+chmod 700 /opt/hoplyra /opt/hoplyra/instances
 date -Iseconds > /opt/hoplyra/.setup-done
 
 log "ready:"

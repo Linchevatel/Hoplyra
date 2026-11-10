@@ -4,16 +4,13 @@ import socket
 
 import uvicorn
 
-from hoplyra.desktop_env import bootstrap_from_env
 from hoplyra.logging_config import configure_logging
 from hoplyra.main import _frontend_dist
 
-bootstrap_from_env()
 log_level = configure_logging().lower()
 
 HOST = os.environ.get("HOPLYRA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("HOPLYRA_PORT", "8787"))
-DESKTOP = os.environ.get("HOPLYRA_DESKTOP", "").strip().lower() in {"1", "true", "yes"}
 
 
 SSL_CERTFILE = os.environ.get("HOPLYRA_SSL_CERTFILE") or os.environ.get("SSL_CERTFILE")
@@ -39,21 +36,20 @@ def _display_host(bind_host: str) -> str:
 
 
 if __name__ == "__main__":
-    if not DESKTOP:
-        url = f"{SCHEME}://{_display_host(HOST)}:{PORT}"
-        ui = _frontend_dist()
-        print(f"Hoplyra API: {url}/api/health")
-        if ui:
-            print(f"Dashboard:   {url}/")
-        else:
-            print("Dashboard:   not bundled (API only)")
+    url = f"{SCHEME}://{_display_host(HOST)}:{PORT}"
+    ui = _frontend_dist()
+    print(f"Hoplyra API: {url}/api/health")
+    if ui:
+        print(f"Dashboard:   {url}/")
+    else:
+        print("Dashboard:   not bundled (API only)")
 
     uvicorn_kwargs: dict[str, object] = {
         "host": HOST,
         "port": PORT,
         "reload": False,
         "log_level": log_level,
-        "access_log": not DESKTOP,
+        "access_log": True,
     }
     if IS_SSL:
         uvicorn_kwargs["ssl_certfile"] = SSL_CERTFILE

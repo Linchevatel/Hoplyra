@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hoplyra.hosts import endpoint_host
+
 import json
 import re
 import secrets
@@ -16,8 +18,11 @@ from hoplyra.xray_bypass import format_bypass_client_bundle
 from hoplyra.xray_runtime import XRAY_MOUNT, compose_xray_service, ensure_xray_image, tls_cert_paths
 from hoplyra.awg_runtime import awg_quick_down, awg_quick_up, ensure_awg_on_host
 from hoplyra.awg_params import (
+    AwgObfuscationParams,
     build_awg_client_conf,
     build_awg_server_conf,
+    check_awg_params_valid,
+    generate_auto_awg_params,
     generate_awg1_0_params,
     generate_awg1_5_params,
     generate_awg2_params,
@@ -97,7 +102,7 @@ DNS = 1.1.1.1, 8.8.8.8
 
 [Peer]
 PublicKey = {server_pub}
-Endpoint = {server_host}:{self.listen_port}
+Endpoint = {endpoint_host(server_host)}:{self.listen_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
@@ -167,18 +172,25 @@ class AmneziaWGDeployer(ProtocolDeployer):
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         awg_ver_raw = kwargs.get("awg_version") or kwargs.get("awgVersion") or "awg3.1"
         awg_ver_clean = str(awg_ver_raw).lower().strip()
+        custom_params = kwargs.get("awg_params") or kwargs.get("awgParams")
+
         if awg_ver_clean in ("awg3.1", "3.1", "3"):
-            awg = generate_awg3_1_params()
             ver_label = "awg3.1"
         elif awg_ver_clean in ("awg1.0", "1.0", "1", "awg"):
-            awg = generate_awg1_0_params()
             ver_label = "awg1.0"
         elif awg_ver_clean in ("awg1.5", "1.5"):
-            awg = generate_awg1_5_params()
             ver_label = "awg1.5"
         else:
-            awg = generate_awg2_params()
             ver_label = "awg2.0"
+
+        if isinstance(custom_params, AwgObfuscationParams):
+            awg = custom_params
+        elif isinstance(custom_params, dict):
+            awg = generate_auto_awg_params(ver_label, overrides=custom_params)
+        else:
+            awg = generate_auto_awg_params(ver_label)
+
+        check_awg_params_valid(awg, awg_version=ver_label)
 
         port = _find_free_udp_port(runner, self.listen_port)
         server_ip_cidr, client_ip, subnet = _find_free_awg_subnet(runner)
@@ -225,6 +237,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
                 "hostAwg": True,
                 "awgVersion": ver_label,
                 "awgParams": awg.as_meta(),
+                "awgMode": awg.obfuscation_mode,
                 "amneziaVpnUri": build_amnezia_awg_vpn_uri(
                     client_conf,
                     host=server_host,

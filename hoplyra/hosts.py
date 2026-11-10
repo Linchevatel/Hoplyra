@@ -33,3 +33,8 @@ def safe_path_suffix(value: str) -> str:
     if not _PATH_SAFE.fullmatch(value):
         raise ValueError(f"Unsafe path segment: {value!r}")
     return value
+
+
+def endpoint_host(host: str) -> str:
+    """Bracket literal IPv6 for URI authorities and WireGuard endpoints."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host

@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,7 +32,8 @@ from hoplyra.panel_auth import (
 from hoplyra.config_lifecycle import restart_remote_config, stop_remote_config
 from hoplyra.deploy_jobs import (
     is_deploy_active,
-    recover_stuck_deploying,
+    reserve_deploy,
+    claim_deploy,
     schedule_recover_stuck_deploying,
     start_chain_deploy_job,
     start_single_deploy_job,
@@ -66,6 +67,13 @@ from hoplyra.awg_runtime import (
     config_uses_awg,
     repair_awg_for_amnezia,
     upgrade_awg_on_host,
+)
+from hoplyra.awg_params import (
+    AwgValidationError,
+    check_awg_params_valid,
+    generate_auto_awg_params,
+    generate_awg_params,
+    validate_awg_params,
 )
 
 ssl_enabled = bool(
@@ -128,12 +136,38 @@ class ServerUpdate(BaseModel):
     notes: str | None = None
 
 
+class AwgParamsRequest(BaseModel):
+    jc: int | None = None
+    jmin: int | None = None
+    jmax: int | None = None
+    s1: int | None = None
+    s2: int | None = None
+    s3: int | None = None
+    s4: int | None = None
+    h1: str | None = None
+    h2: str | None = None
+    h3: str | None = None
+    h4: str | None = None
+    i1: str | None = None
+    i2: str | None = None
+    i3: str | None = None
+    i4: str | None = None
+    i5: str | None = None
+    headerProtectionKey: str | None = None
+    contentPaddingAddition: str | None = None
+    randomTrailers: bool | None = None
+    disableCookies: bool | None = None
+    profile: str | None = None
+
+
 class DeployRequest(BaseModel):
     serverId: str
     protocol: str
     transport: str | None = None
     xrayBypass: bool = False
     awgVersion: str | None = None
+    awgMode: Literal["none", "auto", "custom"] | None = None
+    awgParams: AwgParamsRequest | dict[str, Any] | None = None
 
 
 def _normalize_auth(body: ServerCreate) -> ServerTarget:
@@ -266,7 +300,7 @@ def _server_has_active_config(conn: Any, server_id: str) -> bool:
     for cfg in _configs_referencing_server(conn, server_id):
         if cfg["status"] == "active":
             return True
-        if cfg["status"] == "deploying" and is_deploy_active(cfg["id"]):
+        if cfg["status"] == "deploying":
             return True
     return False
 
@@ -780,6 +814,8 @@ class ChainHopRequest(BaseModel):
     transport: str | None = None
     xrayBypass: bool = False
     awgVersion: str | None = None
+    awgMode: Literal["none", "auto", "custom"] | None = None
+    awgParams: AwgParamsRequest | dict[str, Any] | None = None
 
 
 class DeployChainRequest(BaseModel):
@@ -790,7 +826,7 @@ def _hop_payload(hops: list[ChainHopRequest]) -> list[dict[str, Any]]:
     import uuid as _uuid
 
     out: list[dict[str, Any]] = []
-    for h in hops:
+    for i, h in enumerate(hops):
         hop: dict[str, Any] = {
             "id": h.id or str(_uuid.uuid4()),
             "protocol": h.protocol,
@@ -800,8 +836,45 @@ def _hop_payload(hops: list[ChainHopRequest]) -> list[dict[str, Any]]:
             hop["transport"] = h.transport
         if h.protocol == "xray" and h.xrayBypass:
             hop["xrayBypass"] = True
-        if h.protocol == "awg" and h.awgVersion:
-            hop["awgVersion"] = h.awgVersion
+        if h.protocol == "awg":
+            hop_ver = h.awgVersion or "awg3.1"
+            clean_ver = str(hop_ver).lower().strip()
+            is_v31 = clean_ver in ("awg3.1", "3.1", "3")
+            hop["awgVersion"] = hop_ver
+            hop["awgMode"] = h.awgMode or "auto"
+            if h.awgMode == "none":
+                hop["awgParams"] = {"obfuscationMode": "none"}
+            elif h.awgParams and h.awgMode != "auto":
+                awg_dict = (
+                    h.awgParams.model_dump(exclude_none=True)
+                    if hasattr(h.awgParams, "model_dump")
+                    else dict(h.awgParams)
+                )
+                if h.awgMode == "custom":
+                    awg_dict["obfuscationMode"] = "custom"
+                v31_keys = ["headerProtectionKey", "contentPaddingAddition", "randomTrailers", "disableCookies"]
+                has_v31 = any(
+                    awg_dict.get(k) is not None
+                    and awg_dict.get(k) is not False
+                    and awg_dict.get(k) != ""
+                    for k in v31_keys
+                )
+                if has_v31 and not is_v31:
+                    raise HTTPException(
+                        400,
+                        f"Звено {i + 1}: Параметры v3.1 (HeaderProtectionKey, ContentPaddingAddition, RandomTrailers, DisableCookies) поддерживаются только при awgVersion 3.1 (запрошена: {hop_ver})",
+                    )
+                try:
+                    awg_resolved = generate_auto_awg_params(clean_ver, overrides=awg_dict)
+                except AwgValidationError as exc:
+                    raise HTTPException(
+                        400,
+                        f"Звено {i + 1}: Ошибка параметров AmneziaWG: {exc}",
+                    ) from exc
+                hop["awgParams"] = awg_resolved.as_meta()
+            else:
+                awg_resolved = generate_auto_awg_params(clean_ver)
+                hop["awgParams"] = awg_resolved.as_meta()
         out.append(hop)
     return out
 
@@ -817,7 +890,7 @@ def _delete_stale_config(conn, server_id: str, protocol: str) -> None:
     for row in rows:
         if row["status"] == "active":
             continue
-        if row["status"] == "deploying" and is_deploy_active(row["id"]):
+        if row["status"] == "deploying":
             continue
         conn.execute("DELETE FROM configs WHERE id = ?", (row["id"],))
 
@@ -838,7 +911,10 @@ def test_chain_route_api(body: DeployChainRequest) -> dict[str, Any]:
 @app.post("/api/configs/deploy-chain")
 def deploy_chain_config(body: DeployChainRequest) -> dict[str, Any]:
     hops = _hop_payload(body.hops)
-    validate_chain(hops)
+    try:
+        validate_chain(hops)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     server_ids = list(dict.fromkeys(h["serverId"] for h in hops))
     servers: dict[str, Any] = {}
@@ -864,36 +940,36 @@ def deploy_chain_config(body: DeployChainRequest) -> dict[str, Any]:
     except ChainPreflightError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    recover_stuck_deploying()
+    with reserve_deploy(config_id):
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _assert_servers_available_for_deploy(conn, server_ids)
+            _delete_stale_config(conn, entry_server_id, plan.entry.protocol)
+            conn.execute(
+                """
+                INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)
+                VALUES (?, ?, ?, 'deploying', ?, ?)
+                """,
+                (
+                    config_id,
+                    entry_server_id,
+                    plan.entry.protocol,
+                    json.dumps({"hops": hops, "hopDeployStatus": ["deploying"] + ["waiting"] * (len(hops) - 1), "chain": True, "touchedServerIds": []}),
+                    db._now(),
+                ),
+            )
+            claim_deploy(conn, config_id)
+            cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
 
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _assert_servers_available_for_deploy(conn, server_ids)
-        _delete_stale_config(conn, entry_server_id, plan.entry.protocol)
-        conn.execute(
-            """
-            INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)
-            VALUES (?, ?, ?, 'deploying', ?, ?)
-            """,
-            (
-                config_id,
-                entry_server_id,
-                plan.entry.protocol,
-                json.dumps({"hops": hops, "hopDeployStatus": ["deploying"] + ["waiting"] * (len(hops) - 1), "chain": True}),
-                db._now(),
-            ),
+        start_chain_deploy_job(
+            config_id,
+            hops=hops,
+            server_ids=server_ids,
+            runners=runners,
+            plan=plan,
+            get_server_row=_get_server_row,
+            server_target=_server_target,
         )
-        cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
-
-    start_chain_deploy_job(
-        config_id,
-        hops=hops,
-        server_ids=server_ids,
-        runners=runners,
-        plan=plan,
-        get_server_row=_get_server_row,
-        server_target=_server_target,
-    )
     return row_to_config(cfg_row)
 
 
@@ -923,35 +999,77 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
             raise HTTPException(400, f"Подготовка VPS: {exc}") from exc
 
     config_id = new_id()
-    log.info("Deploy %s on %s (%s) config=%s body=%s", protocol, row["name"], row["host"], config_id, body.dict())
+    log.info("Deploy %s on %s (%s) config=%s", protocol, row["name"], row["host"], config_id)
 
     awg_ver = body.awgVersion or "awg3.1"
-    meta_initial = {"awgVersion": awg_ver} if protocol == "awg" else {}
+    clean_ver = str(awg_ver).lower().strip()
+    is_v31 = clean_ver in ("awg3.1", "3.1", "3")
 
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _delete_stale_config(conn, body.serverId, protocol)
-        conn.execute(
-            """
-            INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)
-            VALUES (?, ?, ?, 'deploying', ?, ?)
-            """,
-            (config_id, body.serverId, protocol, json.dumps(meta_initial), db._now()),
+    awg_params_dict: dict[str, Any] | None = None
+    if protocol == "awg":
+        if body.awgMode == "none":
+            awg_params_dict = {"obfuscationMode": "none"}
+        elif body.awgParams and body.awgMode != "auto":
+            raw_overrides = (
+                body.awgParams.model_dump(exclude_none=True)
+                if hasattr(body.awgParams, "model_dump")
+                else dict(body.awgParams)
+            )
+            if body.awgMode == "custom":
+                raw_overrides["obfuscationMode"] = "custom"
+            v31_keys = ["headerProtectionKey", "contentPaddingAddition", "randomTrailers", "disableCookies"]
+            has_v31 = any(
+                raw_overrides.get(k) is not None
+                and raw_overrides.get(k) is not False
+                and raw_overrides.get(k) != ""
+                for k in v31_keys
+            )
+            if has_v31 and not is_v31:
+                raise HTTPException(
+                    400,
+                    f"Параметры v3.1 (HeaderProtectionKey, ContentPaddingAddition, RandomTrailers, DisableCookies) поддерживаются только при awgVersion 3.1 (запрошена: {awg_ver})",
+                )
+            try:
+                awg_resolved = generate_auto_awg_params(clean_ver, overrides=raw_overrides)
+            except AwgValidationError as exc:
+                raise HTTPException(400, f"Ошибка параметров AmneziaWG: {exc}") from exc
+            awg_params_dict = awg_resolved.as_meta()
+        else:
+            awg_resolved = generate_auto_awg_params(clean_ver)
+            awg_params_dict = awg_resolved.as_meta()
+
+    meta_initial = {"awgVersion": awg_ver, "awgMode": body.awgMode or "auto"} if protocol == "awg" else {}
+    if protocol == "awg" and awg_params_dict:
+        meta_initial["awgParams"] = awg_params_dict
+
+    with reserve_deploy(config_id):
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _assert_servers_available_for_deploy(conn, [body.serverId])
+            _delete_stale_config(conn, body.serverId, protocol)
+            conn.execute(
+                """
+                INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)
+                VALUES (?, ?, ?, 'deploying', ?, ?)
+                """,
+                (config_id, body.serverId, protocol, json.dumps(meta_initial), db._now()),
+            )
+            claim_deploy(conn, config_id)
+            cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
+
+        start_single_deploy_job(
+            config_id,
+            server_id=body.serverId,
+            protocol=protocol,
+            transport=transport,
+            xray_bypass=body.xrayBypass,
+            awg_version=awg_ver,
+            awg_params=awg_params_dict,
+            host=row["host"],
+            target=target,
+            get_server_row=_get_server_row,
+            server_target=_server_target,
         )
-        cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
-
-    start_single_deploy_job(
-        config_id,
-        server_id=body.serverId,
-        protocol=protocol,
-        transport=transport,
-        xray_bypass=body.xrayBypass,
-        awg_version=awg_ver,
-        host=row["host"],
-        target=target,
-        get_server_row=_get_server_row,
-        server_target=_server_target,
-    )
     return row_to_config(cfg_row)
 
 
@@ -1160,6 +1278,8 @@ def repair_amnezia_awg_config(config_id: str) -> dict[str, Any]:
     if not cfg["instance_path"] or not cfg["client_config"]:
         raise HTTPException(400, "Конфиг ещё не развёрнут")
 
+    if meta.get("awgMode") == "none" or (meta.get("awgParams") or {}).get("obfuscationMode") == "none":
+        raise HTTPException(400, "Default AWG has no obfuscation parameters to repair")
     runner = RemoteRunner(_server_target(row))
     port = int(meta.get("listenPort") or 55424)
     try:
@@ -1232,6 +1352,29 @@ def upgrade_awg_config(config_id: str) -> dict[str, Any]:
         updated = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
 
     return {"config": row_to_config(updated), "upgrade": results}
+
+
+@app.post("/api/awg/validate")
+def validate_awg_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
+    ver = payload.get("awgVersion") or payload.get("awg_version")
+    params = payload.get("params") or payload.get("awgParams") or payload
+    errors = validate_awg_params(params, awg_version=ver)
+    return {"valid": len(errors) == 0, "errors": errors}
+
+
+@app.get("/api/awg/generate")
+def generate_awg_endpoint(version: str = "awg3.1", profile: str = "quic") -> dict[str, Any]:
+    clean_ver = str(version).lower().strip()
+    try:
+        params = generate_auto_awg_params(version=clean_ver, overrides={"profile": profile})
+    except AwgValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "awgVersion": clean_ver,
+        "profile": profile,
+        "params": params.as_meta(),
+        "confLines": params.conf_lines(),
+    }
 
 
 def _cleanup_remote_config_async(cfg: dict[str, Any], *, strict: bool) -> None:
