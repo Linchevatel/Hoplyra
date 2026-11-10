@@ -46,14 +46,36 @@ The web UI uses the **Ink Amber** dark theme, bento-style cards, and refreshed g
 
 ---
 
-## 🔐 Panel login
+## ⚙️ Installation
 
-The dashboard is protected by a **local administrator account** (not a cloud signup):
+Hoplyra is a **server application** with a web UI. Deploy the backend on a Linux server — it serves the dashboard on one port.
 
-- After `make install`, sign in at **https://YOUR_SERVER_IP:8787** (or **https://127.0.0.1:8787**) with **`admin` / `admin`**
-- **Change the password** in **Settings** on first use
-- Sessions use **HTTP-only cookies** (Secure flag on HTTPS); SSH passwords for VPS are stored **encrypted** in the local SQLite database
-- **HTTPS** is enabled automatically — certificates are generated on `make install` (`scripts/generate-ssl.sh`), or use an Nginx/Caddy reverse proxy
+**Dependencies** (Debian / Ubuntu example):
+
+```bash
+sudo apt install make python3-venv podman podman-compose
+```
+
+**Install:**
+
+```bash
+git clone https://github.com/Linchevatel/Hoplyra.git
+cd Hoplyra
+make install
+```
+
+Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and sign in with **`admin` / `admin`**.
+
+**Container images:**
+
+| Image | Purpose |
+|-------|---------|
+| `hoplyra-gateway:1` | Xray + Tor + iptables (AWG/WG/OpenVPN chains) |
+| `hoplyra-tor:1` | Tor sidecar |
+| `hoplyra-xray:1` | Xray relay/exit |
+| `hoplyra-wg:1` | WireGuard in a container |
+| `hoplyra-openvpn:4` | OpenVPN + PKI |
+| `hoplyra-socks:1` | 3proxy sidecar for standalone SOCKS5 |
 
 ---
 
@@ -103,36 +125,14 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 ---
 
-## ⚙️ Installation
+## 🔐 Panel login
 
-Hoplyra is a **server application** with a web UI. Deploy the backend on a Linux server — it serves the dashboard on one port.
+The dashboard is protected by a **local administrator account** (not a cloud signup):
 
-**Dependencies** (Debian / Ubuntu example):
-
-```bash
-sudo apt install make python3-venv podman podman-compose
-```
-
-**Install:**
-
-```bash
-git clone https://github.com/Linchevatel/Hoplyra.git
-cd Hoplyra
-make install
-```
-
-Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and sign in with **`admin` / `admin`**.
-
-**Container images:**
-
-| Image | Purpose |
-|-------|---------|
-| `hoplyra-gateway:1` | Xray + Tor + iptables (AWG/WG/OpenVPN chains) |
-| `hoplyra-tor:1` | Tor sidecar |
-| `hoplyra-xray:1` | Xray relay/exit |
-| `hoplyra-wg:1` | WireGuard in a container |
-| `hoplyra-openvpn:4` | OpenVPN + PKI |
-| `hoplyra-socks:1` | 3proxy sidecar for standalone SOCKS5 |
+- After `make install`, sign in at **https://YOUR_SERVER_IP:8787** (or **https://127.0.0.1:8787**) with **`admin` / `admin`**
+- **Change the password** in **Settings** on first use
+- Sessions use **HTTP-only cookies** (Secure flag on HTTPS); SSH passwords for VPS are stored **encrypted** in the local SQLite database
+- **HTTPS** is enabled automatically — certificates are generated on `make install` (`scripts/generate-ssl.sh`), or use an Nginx/Caddy reverse proxy
 
 ---
 
