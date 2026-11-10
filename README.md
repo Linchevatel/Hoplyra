@@ -8,24 +8,20 @@
 
 Hoplyra is not just a panel for a single VPN. It is a **multi-hop chain builder**: you compose a route from different protocols and servers, and the system links the hops, configures routing, and delivers **one client config** — at the chain entry.
 
-Product site and install guide: **[hoplyra.com](https://hoplyra.com)**
-
 <div align="center">
 
 ![Example chain AWG → Tor → Xray](assets/chain.png)
 
 </div>
 
-## Panel login
+## AmneziaWG 3.1 — Default and Stealth
 
-The dashboard is protected by a **local administrator account** (not a cloud signup).
+Hoplyra speaks the full **AmneziaWG 3.1** protocol with two one-click modes:
 
-- After `make install`, sign in at **https://YOUR_SERVER_IP:8787** (or **https://127.0.0.1:8787**) with **`admin` / `admin`**
-- Change the password in **Settings** on first use
-- Sessions use HTTP-only cookies (with Secure flag on HTTPS); SSH passwords for VPS are stored encrypted in the local SQLite database
-- HTTPS is enabled automatically by generating SSL certificates on `make install` (`scripts/generate-ssl.sh`), or via Nginx/Caddy reverse proxy.
+- **Default** — plain AWG 3.1 with no obfuscation parameters, for networks where WireGuard is not filtered
+- **Stealth** — automatic obfuscation profile: junk packets (`Jc/Jmin/Jmax`), packet-size shifts (`S1–S4`), magic headers (`H1–H4`), and a CPS mimicry chain (`I1–I5`)
 
-
+Stealth offers **QUIC / TLS / DNS / SIP / STUN** mimicry profiles out of the box. Advanced 3.1 options are available when you need full control: `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, and `DisableCookies`.
 
 ## Chains
 
@@ -36,11 +32,22 @@ A typical VPN is one tunnel to one server. Hoplyra lets you **combine multiple p
 - **Tor in the chain** — as a relay hop or as an exit with a changing IP
 - **Smart deploy** — background deployment with hop-by-hop progress, gateway, iptables, containers, and inter-server links without manual SSH
 
-Common patterns: **AWG → Tor → Xray**, **WireGuard → Xray → Tor**, **OpenVPN → Tor → AmneziaWG** — and many other combinations from seven protocols.
+Common patterns: **AWG → Tor → Xray**, **WireGuard → Xray → Tor**, **OpenVPN → Tor → AmneziaWG** — and many other combinations.
 
 Background deployments use **multi-process deploy leases** with heartbeats and crash recovery to coordinate workers and recover interrupted jobs.
 
+Multiple configurations can run **side by side on the same server** — each one gets its own container, interface, port, and subnet, so protocols never override each other.
+
 The web UI uses the **Ink Amber** dark theme, bento-style cards, and refreshed gold icons.
+
+## Panel login
+
+The dashboard is protected by a **local administrator account** (not a cloud signup).
+
+- After `make install`, sign in at **https://YOUR_SERVER_IP:8787** (or **https://127.0.0.1:8787**) with **`admin` / `admin`**
+- Change the password in **Settings** on first use
+- Sessions use HTTP-only cookies (with Secure flag on HTTPS); SSH passwords for VPS are stored encrypted in the local SQLite database
+- HTTPS is enabled automatically by generating SSL certificates on `make install` (`scripts/generate-ssl.sh`), or via Nginx/Caddy reverse proxy
 
 ## Status
 
@@ -74,11 +81,21 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 </div>
 
+## Protocols
+
+| | ID | Protocol | Port |
+|:-:|---|----------|------|
+| <img src="assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | WireGuard | 51820/udp |
+| <img src="assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | AmneziaWG 3.1 | 55424/udp |
+| <img src="assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | OpenVPN | 1194/udp or tcp |
+| <img src="assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | Xray VLESS + TLS / REALITY | 443/tcp |
+| <img src="assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | Tor (SOCKS) | 9050/tcp |
+
 ## Installation
 
-Hoplyra is a server application with a web UI. Desktop builds (AppImage / portable exe) were removed. Deploy the backend on a Linux server — it serves the dashboard on one port (see the production sections below).
+Hoplyra is a server application with a web UI. Deploy the backend on a Linux server — it serves the dashboard on one port.
 
-## Quick start
+### Quick start
 
 Dependencies (Debian / Ubuntu example):
 
@@ -94,7 +111,7 @@ make install
 
 Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and sign in with **`admin` / `admin`**.
 
-## Container images
+### Container images
 
 | Image | Purpose |
 |-------|---------|
@@ -105,20 +122,6 @@ Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and s
 | `hoplyra-openvpn:4` | OpenVPN + PKI |
 | `hoplyra-socks:1` | 3proxy sidecar for standalone SOCKS5 |
 
-## Protocols
-
-| | ID | Protocol | Port |
-|:-:|---|----------|------|
-| <img src="assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | WireGuard | 51820/udp |
-| <img src="assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | AmneziaWG 3.1 | 55424/udp |
-| <img src="assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | OpenVPN | 1194/udp or tcp |
-| <img src="assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | Xray VLESS + TLS / REALITY | 443/tcp |
-| <img src="assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | Tor (SOCKS) | 9050/tcp |
-
-### AmneziaWG 3.1
-
-Choose **Default** or **Stealth** mode with automatically generated obfuscation parameters. Stealth offers **QUIC / TLS / DNS / SIP / STUN** mimicry profiles; advanced 3.1 settings include `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, and `DisableCookies`.
-
 ## Support the project
 
 | | Network | Address |
@@ -128,8 +131,6 @@ Choose **Default** or **Stealth** mode with automatically generated obfuscation 
 | <img src="assets/crypto/usdt.png" width="44" alt="USDT"> | TRON (TRC-20) | `TYUkmupkzCGzkio77Db7PKEDu4JN8JD1eb` |
 | <img src="assets/crypto/trx.png" width="44" alt="TRX"> | TRON | `TX7yRGo5xT2Mj5NBVhu7bdv58jmStHFuGZ` |
 
-Donation section and feature overview are also on **[hoplyra.com](https://hoplyra.com)**.
-
 ## License
 
-MIT · [hoplyra.com](https://hoplyra.com)
+MIT
