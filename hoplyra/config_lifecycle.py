@@ -71,9 +71,21 @@ def stop_remote_config(
             row = get_server_row(sid)
             runner = RemoteRunner(server_target(row))
             try:
-                if not has_other_config_containers(runner, config_id):
-                    for conf in discover_awg_confs(runner, config_id):
-                        awg_quick_down(runner, conf)
+                # Config-scoped confs belong to this chain even on shared hosts.
+                # Stop native AWG before compose/purge removes its PostDown conf.
+                confs = discover_awg_confs(runner, config_id)
+                for conf in confs:
+                    awg_quick_down(runner, conf)
+                native_awg_here = any(
+                    hop.get("protocol") == "awg" and hop.get("serverId") == sid
+                    for hop in meta.get("hops", [])
+                )
+                if native_awg_here and not confs and not has_other_config_containers(runner, config_id):
+                    # Chain native AWG uses awg0 (including legacy deployments),
+                    # not the config-specific name used by standalone AWG.
+                    # Without a conf, only reclaim this global name on an
+                    # exclusive host; otherwise ownership cannot be established.
+                    runner.run("ip link delete awg0 2>/dev/null || true", timeout=60)
                 _run_chain_compose(runner, root, action="down")
                 if purge:
                     purge_host_artifacts(runner, config_id, chain=True)

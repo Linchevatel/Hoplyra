@@ -102,7 +102,7 @@ app.add_middleware(
 )
 
 
-SINGLE_PROTOCOLS = frozenset(DEPLOYERS.keys())
+SINGLE_PROTOCOLS = frozenset(DEPLOYERS) | {"openvpn"}
 
 
 class LoginRequest(BaseModel):
@@ -1045,8 +1045,11 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
     with reserve_deploy(config_id):
         with connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            _assert_servers_available_for_deploy(conn, [body.serverId])
-            _delete_stale_config(conn, body.serverId, protocol)
+            for existing in _configs_referencing_server(conn, body.serverId):
+                if json.loads(existing["meta_json"] or "{}").get("chain") and existing["status"] in ("active", "deploying"):
+                    raise HTTPException(409, "Ресурсы сервера зарезервированы неизменяемой цепью")
+            from hoplyra.resource_allocation import allocate
+            meta_initial.update(allocate(conn, body.serverId, protocol, runner))
             conn.execute(
                 """
                 INSERT INTO configs (id, server_id, protocol, status, meta_json, created_at)

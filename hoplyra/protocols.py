@@ -5,6 +5,7 @@ from hoplyra.hosts import endpoint_host
 import json
 import re
 import secrets
+import shlex
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -80,12 +81,16 @@ class WireGuardDeployer(ProtocolDeployer):
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
-        client_ip = "10.66.66.2"
-        subnet = "10.66.66.0/24"
+        resources = kwargs.get("resources") or {}
+        port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
+        subnet = resources.get("subnet") or "10.66.66.0/24"
+        prefix = subnet.rsplit(".", 1)[0]
+        client_ip = f"{prefix}.2"
+        interface = f"wg_{config_id[:8]}"
 
         wg_conf = f"""[Interface]
-Address = 10.66.66.1/24
-ListenPort = {self.listen_port}
+Address = {prefix}.1/24
+ListenPort = {port}
 PrivateKey = {server_priv}
 PostUp = {nat_postup(subnet)}
 PostDown = {nat_postdown(subnet)}
@@ -102,24 +107,24 @@ DNS = 1.1.1.1, 8.8.8.8
 
 [Peer]
 PublicKey = {server_pub}
-Endpoint = {endpoint_host(server_host)}:{self.listen_port}
+Endpoint = {endpoint_host(server_host)}:{port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-wg-{config_id[:8]}"
-        conf_path = f"{path}/wg0.conf"
+        conf_path = f"{path}/{interface}.conf"
         ensure_wg_image(runner)
         mkdir_remote(runner, path)
         runner.upload_text(conf_path, wg_conf, 0o600)
-        compose = f"services:\n{compose_wg_service(container, conf_path, cap_sys_module=True)}\n"
+        compose = f"services:\n{compose_wg_service(container, conf_path, cap_sys_module=True, interface=interface)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         podman_compose_up(runner, path, self.compose_project(config_id))
         return DeployResult(
             client_config=client_conf,
             container_name=container,
             instance_path=path,
-            meta={"serverPublicKey": server_pub, "listenPort": self.listen_port},
+            meta={"serverPublicKey": server_pub, "listenPort": port, "subnet": subnet, "interface": interface},
         )
 
 
@@ -145,10 +150,18 @@ def _find_free_udp_port(runner: RemoteRunner, base_port: int = 55424) -> int:
         match = re.search(r"listening port:\s*(\d+)", line)
         if match:
             used.add(int(match.group(1)))
-    port = base_port
-    while port in used:
-        port += 1
-    return port
+    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30)
+    for name in re.findall(r"^\d+:\s+((?:awg|wg)[\w.-]*)(?:@[^:]+)?:", links, re.M):
+        for tool in ("awg", "wg"):
+            _, output, _ = runner.run(
+                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30
+            )
+            if output.strip().isdigit():
+                used.add(int(output.strip()))
+    for port in range(base_port, 65536):
+        if port not in used:
+            return port
+    raise RuntimeError("No free UDP listen port available")
 
 
 def _find_free_awg_subnet(runner: RemoteRunner) -> tuple[str, str, str]:
@@ -159,10 +172,10 @@ def _find_free_awg_subnet(runner: RemoteRunner) -> tuple[str, str, str]:
             match = re.search(r"10\.9\.(\d+)\.", line)
             if match:
                 used.add(int(match.group(1)))
-    idx = 1
-    while idx in used:
-        idx += 1
-    return f"10.9.{idx}.1/24", f"10.9.{idx}.2", f"10.9.{idx}.0/24"
+    for idx in range(1, 255):
+        if idx not in used:
+            return f"10.9.{idx}.1/24", f"10.9.{idx}.2", f"10.9.{idx}.0/24"
+    raise RuntimeError("No free AWG /24 subnet available")
 
 
 class AmneziaWGDeployer(ProtocolDeployer):
@@ -192,8 +205,13 @@ class AmneziaWGDeployer(ProtocolDeployer):
 
         check_awg_params_valid(awg, awg_version=ver_label)
 
-        port = _find_free_udp_port(runner, self.listen_port)
+        resources = kwargs.get("resources") or {}
+        port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
         server_ip_cidr, client_ip, subnet = _find_free_awg_subnet(runner)
+        if resources.get("subnet"):
+            subnet = resources["subnet"]
+            prefix = subnet.rsplit(".", 1)[0]
+            server_ip_cidr, client_ip = f"{prefix}.1/24", f"{prefix}.2"
 
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
@@ -223,10 +241,43 @@ class AmneziaWGDeployer(ProtocolDeployer):
         container = f"cv-awg-{config_id[:8]}"
         conf_name = f"awg_{config_id[:8]}.conf"
         conf_path = f"{path}/{conf_name}"
-        mkdir_remote(runner, path)
-        runner.upload_text(conf_path, awg_conf, 0o600)
-        ensure_awg_on_host(runner)
-        awg_quick_up(runner, conf_path)
+        def cleanup(*, remove_dir: bool) -> None:
+            # Independently attempt all actions without masking the deploy error.
+            commands = [
+                f"awg-quick down {shlex.quote(conf_path)} 2>/dev/null || true",
+                f"ip link delete {shlex.quote(conf_name[:-5])} 2>/dev/null || true",
+            ]
+            if remove_dir:
+                commands.append(f"rm -rf -- {shlex.quote(path)}")
+            for command in commands:
+                try:
+                    runner.run(command, timeout=60)
+                except Exception:
+                    pass
+
+        try:
+            mkdir_remote(runner, path)
+            runner.upload_text(conf_path, awg_conf, 0o600)
+            ensure_awg_on_host(runner)
+            try:
+                awg_quick_up(runner, conf_path)
+            except RuntimeError:
+                cleanup(remove_dir=False)
+                # Only retry if another listener has occupied the failed port.
+                if _find_free_udp_port(runner, port) == port:
+                    raise
+                new_port = _find_free_udp_port(runner, port + 1)
+                awg_conf = awg_conf.replace(f"ListenPort = {port}", f"ListenPort = {new_port}")
+                client_conf = client_conf.replace(
+                    f"Endpoint = {endpoint_host(server_host)}:{port}",
+                    f"Endpoint = {endpoint_host(server_host)}:{new_port}",
+                )
+                port = new_port
+                runner.upload_text(conf_path, awg_conf, 0o600)
+                awg_quick_up(runner, conf_path)
+        except Exception:
+            cleanup(remove_dir=True)
+            raise
         return DeployResult(
             client_config=client_conf,
             container_name=container,
@@ -235,6 +286,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
                 "serverPublicKey": server_pub,
                 "listenPort": port,
                 "hostAwg": True,
+                "subnet": subnet,
                 "awgVersion": ver_label,
                 "awgParams": awg.as_meta(),
                 "awgMode": awg.obfuscation_mode,
@@ -273,13 +325,16 @@ class OpenVPNDeployer(ProtocolDeployer):
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-openvpn-{config_id[:8]}"
 
+        resources = kwargs.get("resources") or {}
+        self.listen_port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
+        subnet = resources.get("subnet", "10.8.0.0/24")
+        interface = f"tun_{config_id[:8]}"
         ensure_openvpn_image(runner)
         mkdir_remote(runner, path)
-        runner.upload_text(f"{path}/server.conf", server_conf_content(self.transport, self.listen_port))
+        runner.upload_text(f"{path}/server.conf", server_conf_content(self.transport, self.listen_port).replace("dev tun\n", f"dev {interface}\ndev-type tun\n").replace("server 10.8.0.0", f"server {subnet.partition('/')[0]}"))
 
-        compose = f"services:\n{compose_service(container, path)}\n"
+        compose = f"services:\n{compose_service(container, path, subnet=subnet)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
-        ensure_openvpn_port_free(runner)
         podman_compose_up(runner, path, self.compose_project(config_id))
 
         provision_openvpn_instance(runner, path, container, self.transport, listen_port=self.listen_port)
@@ -289,7 +344,7 @@ class OpenVPNDeployer(ProtocolDeployer):
             client_config=client_conf,
             container_name=container,
             instance_path=path,
-            meta={"listenPort": self.listen_port, "transport": self.transport},
+            meta={"listenPort": self.listen_port, "transport": self.transport, "subnet": subnet, "interface": interface},
         )
 
 
@@ -305,10 +360,18 @@ def _find_free_tcp_port(runner: RemoteRunner, base_port: int = 443) -> int:
                     used.add(int(addr.rsplit(":", 1)[-1]))
                 except ValueError:
                     pass
-    port = base_port
-    while port in used:
-        port += 1
-    return port
+    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30)
+    for name in re.findall(r"^\d+:\s+((?:awg|wg)[\w.-]*)(?:@[^:]+)?:", links, re.M):
+        for tool in ("awg", "wg"):
+            _, output, _ = runner.run(
+                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30
+            )
+            if output.strip().isdigit():
+                used.add(int(output.strip()))
+    for port in range(base_port, 449):
+        if port not in used:
+            return port
+    raise RuntimeError("Нет свободных портов Xray в пуле 443–448")
 
 
 class XrayDeployer(ProtocolDeployer):
@@ -322,7 +385,7 @@ class XrayDeployer(ProtocolDeployer):
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-xray-{config_id[:8]}"
 
-        port = _find_free_tcp_port(runner, self.listen_port)
+        port = (kwargs.get("resources") or {}).get("listenPort") or _find_free_tcp_port(runner, self.listen_port)
         xray_config, client_text, meta, _secrets = format_bypass_client_bundle(
             server_host,
             config_id,

@@ -76,8 +76,10 @@ def build_client_ovpn(
     return client_full
 
 
-def compose_service(container_name: str, host_path: str, *, service_name: str = "openvpn", skip_wan_nat: bool = False) -> str:
+def compose_service(container_name: str, host_path: str, *, service_name: str = "openvpn", skip_wan_nat: bool = False, subnet: str | None = None) -> str:
     env = "\n    environment:\n      - OPENVPN_SKIP_WAN_NAT=1" if skip_wan_nat else ""
+    if subnet:
+        env = "\n    environment:\n      - OPENVPN_SUBNET=" + subnet + ("\n      - OPENVPN_SKIP_WAN_NAT=1" if skip_wan_nat else "")
     return f"""  {service_name}:
     image: {OPENVPN_IMAGE}
     container_name: {container_name}

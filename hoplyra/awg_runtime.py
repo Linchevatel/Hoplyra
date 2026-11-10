@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Any
 
 from hoplyra.remote import RemoteRunner, nat_postdown, nat_postup
@@ -76,7 +77,7 @@ def ensure_amnezia_awg_headers(
 ) -> str:
     awg = params or generate_awg2_params()
     if parse_awg_params_from_conf(conf) and re.search(r"^I1\s*=", conf, re.MULTILINE):
-        return conf
+        return ensure_awg2_obfuscation_in_conf(conf, parse_awg_params_from_conf(conf))
     return ensure_awg2_obfuscation_in_conf(conf, awg)
 
 
@@ -122,7 +123,7 @@ def repair_awg_for_amnezia(
         raise RuntimeError(f"Не найден {server_path}: {err[:200]}")
 
     server_params = parse_awg_params_from_conf(server_conf) or generate_awg2_params()
-    if not server_params.i1.strip():
+    if not str(server_params.i1).strip():
         server_params = AwgObfuscationParams(
             jc=server_params.jc,
             jmin=server_params.jmin,
@@ -220,7 +221,15 @@ def awg_quick_up(runner: RemoteRunner, conf_path: str) -> None:
 
 
 def awg_quick_down(runner: RemoteRunner, conf_path: str) -> None:
-    runner.run(f"awg-quick down {conf_path} 2>/dev/null || true", timeout=60)
+    # Removing the link also releases its UDP socket if the conf vanished or
+    # awg-quick failed. Interface names are the conf basename (awg-quick rule).
+    conf_q = shlex.quote(conf_path)
+    iface_q = shlex.quote(conf_path.rsplit("/", 1)[-1].removesuffix(".conf"))
+    runner.run(
+        f"awg-quick down {conf_q} 2>/dev/null || "
+        f"ip link delete {iface_q} 2>/dev/null || true",
+        timeout=60,
+    )
 
 
 def chain_tag_from_config_id(config_id: str) -> str:

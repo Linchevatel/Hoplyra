@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import random
 import re
 import secrets
@@ -166,6 +167,17 @@ def _rand_awg2_headers() -> tuple[str, str, str, str]:
     return ranges[0], ranges[1], ranges[2], ranges[3]
 
 
+def _normalized_int(value: Any, field: str, *, range_start: bool = False) -> int:
+    text = str(value).strip()
+    if range_start:
+        match = re.fullmatch(r"(\d+)\s*[-–]\s*\d+", text)
+        if match:
+            text = match.group(1)
+    if isinstance(value, bool) or not re.fullmatch(r"[+-]?\d+", text):
+        raise AwgValidationError(f"{field}: ожидалось целое число")
+    return int(text)
+
+
 @dataclass(frozen=True)
 class AwgObfuscationParams:
     obfuscation_mode: str = "auto"
@@ -176,19 +188,45 @@ class AwgObfuscationParams:
     s2: int = 75
     s3: int = 14
     s4: int = 12
-    h1: str = _AWG2_H_RANGES[0]
-    h2: str = _AWG2_H_RANGES[1]
-    h3: str = _AWG2_H_RANGES[2]
-    h4: str = _AWG2_H_RANGES[3]
-    i1: str = AWG2_DEFAULT_I1
-    i2: str = ""
-    i3: str = ""
-    i4: str = ""
-    i5: str = ""
+    h1: int | str = _AWG2_H_RANGES[0]
+    h2: int | str = _AWG2_H_RANGES[1]
+    h3: int | str = _AWG2_H_RANGES[2]
+    h4: int | str = _AWG2_H_RANGES[3]
+    i1: str | int = AWG2_DEFAULT_I1
+    i2: str | int = ""
+    i3: str | int = ""
+    i4: str | int = ""
+    i5: str | int = ""
     random_trailers: bool = False
     disable_cookies: bool = False
     header_protection_key: str = ""
-    content_padding_addition: str = ""
+    content_padding_addition: int | str = ""
+
+    def __post_init__(self) -> None:
+        # One boundary for metadata, direct construction, generators and config parsing.
+        for name in ("jc", "jmin", "jmax", "s1", "s2", "s3", "s4"):
+            object.__setattr__(self, name, _normalized_int(getattr(self, name), name))
+        for name in ("h1", "h2", "h3", "h4"):
+            value = _normalized_int(getattr(self, name), name, range_start=True)
+            if not 0 <= value <= 4_294_967_295:
+                raise AwgValidationError(f"{name}: значение вне диапазона 0..4294967295")
+            object.__setattr__(self, name, value)
+        for name in ("i1", "i2", "i3", "i4", "i5"):
+            raw = getattr(self, name)
+            value = "" if raw is None else str(raw).strip()
+            if value and not value.startswith("<"):
+                value = _normalized_int(value, name, range_start=True)
+            object.__setattr__(self, name, value)
+        value = self.content_padding_addition
+        if value is not None and str(value).strip():
+            value = _normalized_int(value, "contentPaddingAddition", range_start=True)
+        else:
+            value = ""
+        object.__setattr__(self, "content_padding_addition", value)
+        object.__setattr__(self, "header_protection_key", str(self.header_protection_key or "").strip())
+        for name in ("random_trailers", "disable_cookies"):
+            value = getattr(self, name)
+            object.__setattr__(self, name, bool(value) and str(value).strip().lower() not in ("0", "false", "off"))
 
     def conf_lines(self) -> str:
         if self.obfuscation_mode == "none":
@@ -210,12 +248,12 @@ class AwgObfuscationParams:
             f"H4 = {self.h4}",
         ])
         for idx, value in enumerate((self.i1, self.i2, self.i3, self.i4, self.i5), start=1):
-            if value.strip():
-                lines.append(f"I{idx} = {value.strip()}")
+            if str(value).strip():
+                lines.append(f"I{idx} = {str(value).strip()}")
         if self.header_protection_key.strip():
             lines.append(f"HeaderProtectionKey = {self.header_protection_key.strip()}")
-        if self.content_padding_addition.strip():
-            lines.append(f"ContentPaddingAddition = {self.content_padding_addition.strip()}")
+        if str(self.content_padding_addition).strip():
+            lines.append(f"ContentPaddingAddition = {str(self.content_padding_addition).strip()}")
         if self.random_trailers:
             lines.append("RandomTrailers = 1")
         if self.disable_cookies:
@@ -229,7 +267,7 @@ class AwgObfuscationParams:
             self.random_trailers
             or self.disable_cookies
             or self.header_protection_key.strip()
-            or self.content_padding_addition.strip()
+            or str(self.content_padding_addition).strip()
         )
         meta: dict[str, Any] = {
             "obfuscationMode": self.obfuscation_mode,
@@ -248,15 +286,15 @@ class AwgObfuscationParams:
         }
         # Empty CPS values are explicit overrides, not missing defaults.
         for idx, value in enumerate((self.i1, self.i2, self.i3, self.i4, self.i5), start=1):
-            meta[f"i{idx}"] = value.strip()
+            meta[f"i{idx}"] = value
         if self.header_protection_key.strip():
             meta["headerProtectionKey"] = self.header_protection_key.strip()
-        if self.content_padding_addition.strip():
-            meta["contentPaddingAddition"] = self.content_padding_addition.strip()
+        if str(self.content_padding_addition).strip():
+            meta["contentPaddingAddition"] = self.content_padding_addition
         if self.random_trailers:
-            meta["randomTrailers"] = 1
+            meta["randomTrailers"] = self.random_trailers
         if self.disable_cookies:
-            meta["disableCookies"] = 1
+            meta["disableCookies"] = self.disable_cookies
         return meta
 
     @classmethod
@@ -269,11 +307,11 @@ class AwgObfuscationParams:
             value = meta.get(key, meta.get(key.capitalize(), default))
             if value is None or value == "":
                 return default
-            return int(value)  # type: ignore[arg-type]
+            return _normalized_int(value, key)
 
         def _opt_str(key: str) -> str:
             value = meta.get(key, "")
-            return str(value).strip() if value else ""
+            return str(value).strip() if value is not None else ""
 
         rt = meta.get("randomTrailers", meta.get("random_trailers", meta.get("RandomTrailers", False)))
         dc = meta.get("disableCookies", meta.get("disable_cookies", meta.get("DisableCookies", False)))
@@ -414,11 +452,10 @@ def validate_awg_params(
     # 2. HeaderProtectionKey validation and Nonce S floor
     has_hpk = bool(hpk)
     if has_hpk:
-        is_hex_64 = len(hpk) == 64 and all(c in "0123456789abcdefABCDEF" for c in hpk)
         is_b64_44 = len(hpk) == 44 and bool(re.match(r"^[A-Za-z0-9+/]{43}=$", hpk))
-        if not (is_hex_64 or is_b64_44):
+        if not is_b64_44:
             errors.append(
-                f"HeaderProtectionKey должен быть 32-байтным hex-ключом (64 hex-символа), неверный формат"
+                "HeaderProtectionKey должен быть 32-байтным ключом в base64 (44 символа, как `awg genkey`), неверный формат"
             )
         if s1 < MIN_S_WITH_HEADER_PROTECTION:
             errors.append(
@@ -513,7 +550,7 @@ def validate_awg_params(
     # 8. CPS I1..I5 tag syntax
     for idx, i_val in enumerate((i1, i2, i3, i4, i5), start=1):
         if i_val:
-            if not CPS_TAG_RE.match(i_val):
+            if not i_val.isdecimal() and not CPS_TAG_RE.match(i_val):
                 errors.append(f"Неверный синтаксис CPS в I{idx}: {i_val}")
 
     return errors
@@ -619,7 +656,7 @@ def generate_awg3_1_params(
     s1, s2, s3, s4 = _rand_awg2_packet_sizes(with_hpk=header_protection)
     h1, h2, h3, h4 = _rand_awg2_headers()
     i1, i2, i3, i4, i5 = generate_cps_profile(profile)
-    hpk = secrets.token_hex(32) if header_protection else ""
+    hpk = base64.b64encode(secrets.token_bytes(32)).decode() if header_protection else ""
     cpa = "16-64" if content_padding else ""
 
     return AwgObfuscationParams(

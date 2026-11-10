@@ -47,6 +47,11 @@ def build_amnezia_awg_package(
     description: str,
     awg_version: str = "awg2.0",
 ) -> dict[str, Any]:
+    from hoplyra.awg_params import parse_awg_params_from_conf, ensure_awg2_obfuscation_in_conf
+
+    params = parse_awg_params_from_conf(client_conf)
+    if params is not None:
+        client_conf = ensure_awg2_obfuscation_in_conf(client_conf, params)
     kv = _parse_kv_conf(client_conf)
     dns_match = re.search(
         r"DNS\s*=\s*(\d{1,3}(?:\.\d{1,3}){3})\s*,\s*(\d{1,3}(?:\.\d{1,3}){3})",

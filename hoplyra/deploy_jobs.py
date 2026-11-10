@@ -337,12 +337,16 @@ def run_single_deploy_job(
         try:
             deployer = get_deployer(protocol, transport=transport, xray_bypass=xray_bypass)
             runner = RemoteRunner(target)
+            with connect() as conn:
+                resource_row = conn.execute("SELECT meta_json FROM configs WHERE id=?", (config_id,)).fetchone()
+            resources = json.loads(resource_row["meta_json"] or "{}")
             result = deployer.deploy(
                 runner,
                 config_id,
                 host,
                 awg_version=awg_version,
                 awg_params=awg_params,
+                resources=resources,
             )
             with connect() as conn:
                 conn.execute(
