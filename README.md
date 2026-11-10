@@ -36,7 +36,11 @@ A typical VPN is one tunnel to one server. Hoplyra lets you **combine multiple p
 - **Tor in the chain** — as a relay hop or as an exit with a changing IP
 - **Smart deploy** — background deployment with hop-by-hop progress, gateway, iptables, containers, and inter-server links without manual SSH
 
-Common patterns: **AWG → Tor → Xray**, **WireGuard → Xray → Tor**, **OpenVPN → Tor → AmneziaWG** — and hundreds of other combinations from five protocols.
+Common patterns: **AWG → Tor → Xray**, **WireGuard → Xray → Tor**, **OpenVPN → Tor → AmneziaWG** — and many other combinations from seven protocols.
+
+Background deployments use **multi-process deploy leases** with heartbeats and crash recovery to coordinate workers and recover interrupted jobs.
+
+The web UI uses the **Ink Amber** dark theme, bento-style cards, and refreshed gold icons.
 
 ## Status
 
@@ -70,30 +74,9 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 </div>
 
-## Desktop (Linux & Windows)
+## Installation
 
-**Скачать:** **[Releases](https://github.com/Linchevatel/Hoplyra/releases)** — AppImage и portable `.exe`.
-
-| Platform | Download |
-|---|---|
-| **Linux x86_64** | [AppImage](https://github.com/Linchevatel/Hoplyra/releases/download/v1.4.2/Hoplyra-1.4.2-x86_64.AppImage) |
-| **Windows x64** | [portable exe](https://github.com/Linchevatel/Hoplyra/releases/download/v1.4.2/Hoplyra-1.4.2-x64-portable.exe) |
-
-Файлы также лежат в `desktop/dist/` (Git LFS).
-
-Linux:
-
-```bash
-sudo apt install libfuse2   # Ubuntu/Debian, if AppImage won't start
-chmod +x Hoplyra-1.4.2-x86_64.AppImage
-./Hoplyra-1.4.2-x86_64.AppImage
-```
-
-Windows: run `Hoplyra-1.4.2-x64-portable.exe` (portable, no installer).
-
-Requires **64-bit Linux, glibc 2.35+** (Ubuntu 22.04+, Debian 12+).
-
-Build from source: see [desktop/README.md](desktop/README.md).
+Hoplyra is a server application with a web UI. Desktop builds (AppImage / portable exe) were removed. Deploy the backend on a Linux server — it serves the dashboard on one port (see the production sections below).
 
 ## Quick start
 
@@ -127,10 +110,14 @@ Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and s
 | | ID | Protocol | Port |
 |:-:|---|----------|------|
 | <img src="assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | WireGuard | 51820/udp |
-| <img src="assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | AmneziaWG 2.0 | 55424/udp |
+| <img src="assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | AmneziaWG 3.1 | 55424/udp |
 | <img src="assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | OpenVPN | 1194/udp or tcp |
 | <img src="assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | Xray VLESS + TLS / REALITY | 443/tcp |
 | <img src="assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | Tor (SOCKS) | 9050/tcp |
+
+### AmneziaWG 3.1
+
+Choose **Default** or **Stealth** mode with automatically generated obfuscation parameters. Stealth offers **QUIC / TLS / DNS / SIP / STUN** mimicry profiles; advanced 3.1 settings include `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, and `DisableCookies`.
 
 ## Support the project
 
