@@ -84,15 +84,20 @@ def build_amnezia_awg_package(
         "I5",
         "RandomTrailers",
         "DisableCookies",
+        "HeaderProtectionKey",
+        "ContentPaddingAddition",
     ):
         if kv.get(key):
             last_config[key] = str(kv[key])
     if kv.get("PresharedKey"):
         last_config["psk_key"] = kv["PresharedKey"]
 
-    awg_ver_clean = (awg_version or "awg3.1").lower().strip()
-    is_v3 = awg_ver_clean in ("awg3.1", "3.1", "3")
-    is_v2 = awg_ver_clean in ("awg2.0", "2.0", "2")
+    has_v31 = any(
+        k in kv for k in ("HeaderProtectionKey", "ContentPaddingAddition", "RandomTrailers", "DisableCookies")
+    )
+    awg_ver_clean = (awg_version or ("awg3.1" if has_v31 else "awg2.0")).lower().strip()
+    is_v3 = awg_ver_clean in ("awg3.1", "3.1", "3") or has_v31
+    is_v2 = (not is_v3) and (awg_ver_clean in ("awg2.0", "2.0", "2"))
     container_name = AWG2_CONTAINER if (is_v2 or is_v3) else "amnezia-awg"
     proto_ver = "3.1" if is_v3 else ("2" if is_v2 else "1")
 

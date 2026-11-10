@@ -20,14 +20,22 @@ CHAINVAULT_AWG_MARKER = "/opt/chainvault/.awg-ready"
 
 HOST_AWG_INSTALL = r"""#!/bin/bash
 set -euo pipefail
-if [ -f /opt/hoplyra/.awg-ready ] && command -v awg-quick >/dev/null 2>&1; then
-  modprobe amneziawg 2>/dev/null || true
+if command -v awg-quick >/dev/null 2>&1 && modprobe amneziawg 2>/dev/null; then
   exit 0
 fi
+unsupported() {
+  echo 'AWG не поддерживается на этом дистрибутиве, используйте AWG-контейнер или другой протокол' >&2
+  exit 1
+}
+# Do not run apt (or an Ubuntu PPA) on unrelated distributions.
+command -v apt-get >/dev/null 2>&1 || unsupported
+. /etc/os-release
+case "$ID" in ubuntu|debian) ;; *) unsupported ;; esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq software-properties-common gnupg curl iproute2 iptables
 if ! apt-get install -y -qq amneziawg amneziawg-tools 2>/dev/null; then
+  [ "$ID" = ubuntu ] || unsupported
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
   apt-get install -y -qq amneziawg amneziawg-tools iproute2 iptables
@@ -132,6 +140,10 @@ def repair_awg_for_amnezia(
             i3=server_params.i3,
             i4=server_params.i4,
             i5=server_params.i5,
+            random_trailers=server_params.random_trailers,
+            disable_cookies=server_params.disable_cookies,
+            header_protection_key=server_params.header_protection_key,
+            content_padding_addition=server_params.content_padding_addition,
         )
 
     server_kv = _parse_kv_conf(server_conf)
@@ -161,6 +173,14 @@ def repair_awg_for_amnezia(
 
     refresh_awg_server_nat(runner, server_path)
 
+    is_v31 = bool(
+        server_params.random_trailers
+        or server_params.disable_cookies
+        or server_params.header_protection_key
+        or server_params.content_padding_addition
+    )
+    awg_ver_label = "awg3.1" if is_v31 else "awg2.0"
+
     return {
         "clientConfig": new_client,
         "amneziaVpnUri": build_amnezia_awg_vpn_uri(
@@ -168,28 +188,35 @@ def repair_awg_for_amnezia(
             host=host,
             port=port,
             description=description,
+            awg_version=awg_ver_label,
         ),
         "awgParams": server_params.as_meta(),
-        "awgVersion": 2,
+        "awgVersion": "3.1" if is_v31 else 2,
     }
 
 
 def ensure_awg_on_host(runner: RemoteRunner) -> None:
     if runner.target.is_local:
         return
-    runner.run(f"bash -s << 'EOF'\n{HOST_AWG_INSTALL}\nEOF", timeout=1200)
+    code, out, err = runner.run(f"bash -s << 'EOF'\n{HOST_AWG_INSTALL}\nEOF", timeout=1200)
+    if code != 0:
+        raise RuntimeError((err or out).strip()[:800] or "AWG installation failed")
     code, _, err = runner.run("command -v awg-quick >/dev/null && modprobe amneziawg && echo ok")
     if code != 0:
         raise RuntimeError(f"amneziawg on host failed: {err[:500]}")
 
 
 def awg_quick_up(runner: RemoteRunner, conf_path: str) -> None:
-    runner.run(
+    code, out, err = runner.run(
         f"modprobe amneziawg 2>/dev/null || true; "
         f"awg-quick down {conf_path} 2>/dev/null || true; "
         f"awg-quick up {conf_path}",
         timeout=120,
     )
+
+    if code != 0:
+        # Output may contain private keys from rejected configs; do not echo it.
+        raise RuntimeError(f"awg-quick up failed (exit {code}); check remote AWG configuration/bind")
 
 
 def awg_quick_down(runner: RemoteRunner, conf_path: str) -> None:
@@ -203,10 +230,19 @@ def chain_tag_from_config_id(config_id: str) -> str:
 
 HOST_AWG_UPGRADE_APT = r"""#!/bin/bash
 set -euo pipefail
+unsupported() {
+  echo 'AWG не поддерживается на этом дистрибутиве, используйте AWG-контейнер или другой протокол' >&2
+  exit 1
+}
+# Do not run apt (or an Ubuntu PPA) on unrelated distributions.
+command -v apt-get >/dev/null 2>&1 || unsupported
+. /etc/os-release
+case "$ID" in ubuntu|debian) ;; *) unsupported ;; esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq software-properties-common gnupg curl iproute2 iptables 2>/dev/null || true
 if ! apt-cache show amneziawg &>/dev/null 2>&1; then
+  [ "$ID" = ubuntu ] || unsupported
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
 fi
