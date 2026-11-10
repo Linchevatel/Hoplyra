@@ -64,6 +64,12 @@ def init_db() -> None:
             );
             """
         )
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(configs)")}
+        for name, kind in (("deploy_owner", "TEXT"), ("lease_expires_at", "REAL")):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {kind}")
     migrate_auth_secrets()
     from hoplyra.panel_auth import ensure_default_admin
 

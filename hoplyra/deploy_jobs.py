@@ -5,6 +5,8 @@ import logging
 import os
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from typing import Any, Callable
 
 from hoplyra import db
@@ -21,6 +23,29 @@ log = logging.getLogger("hoplyra")
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE_THREADS: list[threading.Thread] = []
 _ACTIVE_CONFIG_IDS: set[str] = set()
+
+OWNER_TOKEN = str(uuid.uuid4())
+LEASE_SEC = 60.0
+HEARTBEAT_SEC = 15.0
+
+
+def claim_deploy(conn, config_id: str) -> None:
+    """Called inside the queue insertion transaction."""
+    conn.execute("UPDATE configs SET deploy_owner=?, lease_expires_at=? WHERE id=? AND status='deploying'",
+                 (OWNER_TOKEN, time.time() + LEASE_SEC, config_id))
+
+
+def renew_deploy_lease(config_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE configs SET lease_expires_at=? WHERE id=? AND deploy_owner=? AND status='deploying'",
+                     (time.time() + LEASE_SEC, config_id, OWNER_TOKEN))
+
+
+def release_deploy_lease(config_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE configs SET deploy_owner=NULL, lease_expires_at=NULL WHERE id=? AND deploy_owner=?",
+                     (config_id, OWNER_TOKEN))
+
 
 RECOVER_GRACE_SEC = float(os.environ.get("HOPLYRA_DEPLOY_RECOVER_GRACE_SEC", "12"))
 
@@ -43,6 +68,22 @@ def register_active_deploy(config_id: str) -> None:
 def unregister_active_deploy(config_id: str) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_CONFIG_IDS.discard(config_id)
+
+
+@contextmanager
+def reserve_deploy(config_id: str):
+    """Own a queued attempt before its row is committed or worker is started."""
+    register_active_deploy(config_id)
+    try:
+        yield
+    except BaseException:
+        try:
+            with connect() as conn:
+                conn.execute("DELETE FROM configs WHERE id=? AND status='deploying'", (config_id,))
+        finally:
+            unregister_active_deploy(config_id)
+            clear_deploy_cancel(config_id)
+        raise
 
 
 def is_deploy_active(config_id: str) -> bool:
@@ -90,40 +131,48 @@ def _stamp_deploy_job(config_id: str) -> None:
         conn.execute("UPDATE configs SET meta_json=? WHERE id=?", (json.dumps(meta), config_id))
 
 
-def recover_stuck_deploying() -> None:
+def recover_stuck_deploying(config_ids: set[str] | None = None) -> None:
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute("SELECT * FROM configs WHERE status = 'deploying'").fetchall()
 
-    for row in rows:
-        config_id = row["id"]
-        if is_deploy_active(config_id):
-            log.info("Skip recover for active deploy config=%s", config_id)
-            continue
+        for row in rows:
+            config_id = row["id"]
+            if config_ids is not None and config_id not in config_ids:
+                continue
+            if is_deploy_active(config_id):
+                log.info("Skip recover for active deploy config=%s", config_id)
+                continue
 
-        meta = json.loads(row["meta_json"] or "{}")
+            if row["deploy_owner"] and (row["lease_expires_at"] or 0) > time.time():
+                continue
+            meta = json.loads(row["meta_json"] or "{}")
 
-        meta["statusMessage"] = (
-            "Deploy interrupted (service restarted). Remove the failed config or redeploy."
-        )
-        if meta.get("chain") and meta.get("hopDeployStatus"):
-            meta["hopDeployStatus"] = [
-                "error" if status == "deploying" else status
-                for status in meta["hopDeployStatus"]
-            ]
-        meta.pop("deployPid", None)
-        meta.pop("deployStartedAt", None)
-        with connect() as conn:
+            meta["statusMessage"] = (
+                "Deploy interrupted (service restarted). Remove the failed config or redeploy."
+            )
+            if meta.get("chain") and meta.get("hopDeployStatus"):
+                meta["hopDeployStatus"] = [
+                    "error" if status == "deploying" else status
+                    for status in meta["hopDeployStatus"]
+                ]
+            meta.pop("deployPid", None)
+            meta.pop("deployStartedAt", None)
             conn.execute(
-                "UPDATE configs SET status='error', meta_json=? WHERE id=? AND status='deploying'",
+                "UPDATE configs SET status='error', meta_json=?, deploy_owner=NULL, lease_expires_at=NULL WHERE id=? AND status='deploying'",
                 (json.dumps(meta), config_id),
             )
-        log.warning("Recovered stuck deploying config=%s", config_id)
+            log.warning("Recovered stuck deploying config=%s", config_id)
 
 
 def schedule_recover_stuck_deploying() -> None:
+    # Only recover rows present at startup, never requests queued during grace.
+    with connect() as conn:
+        config_ids = {row["id"] for row in conn.execute("SELECT id FROM configs WHERE status='deploying'")}
+
     def _worker() -> None:
         time.sleep(RECOVER_GRACE_SEC)
-        recover_stuck_deploying()
+        recover_stuck_deploying(config_ids)
 
     threading.Thread(
         target=_worker,
@@ -136,18 +185,11 @@ def _touched_chain_server_ids(cfg: dict[str, Any]) -> list[str] | None:
     meta = json.loads(cfg.get("meta_json") or "{}")
     if not meta.get("chain"):
         return None
-    hops = meta.get("hops") or []
-    statuses = meta.get("hopDeployStatus") or []
-    touched: list[str] = []
-    seen: set[str] = set()
-    for index, hop in enumerate(hops):
-        status = statuses[index] if index < len(statuses) else "waiting"
-        if status in ("deploying", "done", "error"):
-            server_id = hop.get("serverId")
-            if server_id and server_id not in seen:
-                seen.add(server_id)
-                touched.append(server_id)
-    return touched or None
+    if "touchedServerIds" in meta:
+        return list(dict.fromkeys(meta["touchedServerIds"]))
+    # Legacy rows have no reliable ownership: UI statuses hide reverse deployment
+    # order. Conservatively clean all chain servers, never infer it from statuses.
+    return None
 
 
 def _rollback_deploy_artifacts(
@@ -157,6 +199,9 @@ def _rollback_deploy_artifacts(
     server_target: Callable[[Any], ServerTarget],
 ) -> str | None:
     server_ids = _touched_chain_server_ids(cfg_dict)
+    # stop_remote_config treats [] as all servers; do not call it for no ownership.
+    if server_ids == []:
+        return None
     last_error: Exception | None = None
     for attempt in range(2):
         try:
@@ -188,6 +233,7 @@ def _mark_deploy_failed(
     *,
     get_server_row: Callable[[str], Any],
     server_target: Callable[[Any], ServerTarget],
+    touched_server_ids: list[str] | None = None,
 ) -> None:
     message = str(error).strip()[:500] or "Deploy failed"
     with connect() as conn:
@@ -218,6 +264,13 @@ def _mark_deploy_failed(
         )
     log.info("Deploy failed config=%s: %s", config_id, message)
 
+    # A running chain attempt knows its ownership even if its first DB write failed.
+    # Keep this override local to cleanup so failure reporting can still succeed.
+    if touched_server_ids is not None:
+        cleanup_meta = json.loads(cfg_dict.get("meta_json") or "{}")
+        cleanup_meta["touchedServerIds"] = list(touched_server_ids)
+        cfg_dict["meta_json"] = json.dumps(cleanup_meta)
+
     cleanup_error = _rollback_deploy_artifacts(
         cfg_dict,
         get_server_row=get_server_row,
@@ -238,12 +291,32 @@ def _mark_deploy_failed(
 
 def _run_deploy_job(config_id: str, runner: Callable[[], None]) -> None:
     register_active_deploy(config_id)
-    _stamp_deploy_job(config_id)
+    stopped = threading.Event()
+
+    def heartbeat() -> None:
+        while not stopped.wait(HEARTBEAT_SEC):
+            try:
+                renew_deploy_lease(config_id)
+            except Exception:
+                log.exception("Deploy heartbeat failed config=%s", config_id)
+
+    pulse = threading.Thread(target=heartbeat, daemon=True, name="hoplyra-deploy-lease")
     try:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            claim_deploy(conn, config_id)
+        _stamp_deploy_job(config_id)
+        pulse.start()
         runner()
     finally:
-        unregister_active_deploy(config_id)
-        clear_deploy_cancel(config_id)
+        stopped.set()
+        if pulse.ident is not None:
+            pulse.join()
+        try:
+            release_deploy_lease(config_id)
+        finally:
+            unregister_active_deploy(config_id)
+            clear_deploy_cancel(config_id)
 
 
 def run_single_deploy_job(
@@ -254,6 +327,7 @@ def run_single_deploy_job(
     transport: str | None,
     xray_bypass: bool,
     awg_version: str = "awg3.1",
+    awg_params: dict[str, Any] | None = None,
     host: str,
     target: ServerTarget,
     get_server_row: Callable[[str], Any],
@@ -263,7 +337,13 @@ def run_single_deploy_job(
         try:
             deployer = get_deployer(protocol, transport=transport, xray_bypass=xray_bypass)
             runner = RemoteRunner(target)
-            result = deployer.deploy(runner, config_id, host, awg_version=awg_version)
+            result = deployer.deploy(
+                runner,
+                config_id,
+                host,
+                awg_version=awg_version,
+                awg_params=awg_params,
+            )
             with connect() as conn:
                 conn.execute(
                     """
@@ -310,9 +390,19 @@ def _start_deploy_thread(name: str, target: Callable[..., None], kwargs: dict[st
         finally:
             _unregister_thread(thread)
 
-    thread = threading.Thread(target=_runner, daemon=False, name=name)
-    _register_thread(thread)
-    thread.start()
+    config_id = kwargs["config_id"]
+    register_active_deploy(config_id)
+    thread = None
+    try:
+        thread = threading.Thread(target=_runner, daemon=False, name=name)
+        _register_thread(thread)
+        thread.start()
+    except BaseException:
+        if thread is not None:
+            _unregister_thread(thread)
+        unregister_active_deploy(config_id)
+        clear_deploy_cancel(config_id)
+        raise
 
 
 def start_single_deploy_job(
@@ -323,6 +413,7 @@ def start_single_deploy_job(
     transport: str | None,
     xray_bypass: bool,
     awg_version: str = "awg3.1",
+    awg_params: dict[str, Any] | None = None,
     host: str,
     target: ServerTarget,
     get_server_row: Callable[[str], Any],
@@ -338,6 +429,7 @@ def start_single_deploy_job(
             "transport": transport,
             "xray_bypass": xray_bypass,
             "awg_version": awg_version,
+            "awg_params": awg_params,
             "host": host,
             "target": target,
             "get_server_row": get_server_row,
@@ -380,6 +472,18 @@ def run_chain_deploy_job(
     server_target: Callable[[Any], ServerTarget],
 ) -> None:
     def _job() -> None:
+        touched_server_ids: list[str] = []
+
+        def on_server_touched(server_id: str) -> None:
+            if server_id not in touched_server_ids:
+                touched_server_ids.append(server_id)
+            with connect() as conn:
+                row = conn.execute("SELECT meta_json FROM configs WHERE id = ?", (config_id,)).fetchone()
+                meta = json.loads(row["meta_json"] or "{}") if row else {}
+                meta["touchedServerIds"] = list(touched_server_ids)
+                conn.execute("UPDATE configs SET meta_json=? WHERE id=?",
+                             (json.dumps(meta), config_id))
+
         def on_hop_statuses(statuses: list[str]) -> None:
             if len(statuses) != len(hops):
                 return
@@ -394,14 +498,24 @@ def run_chain_deploy_job(
                 )
 
         try:
+            # Persist explicit empty ownership before any provisioning can fail.
+            with connect() as conn:
+                row = conn.execute("SELECT meta_json FROM configs WHERE id = ?", (config_id,)).fetchone()
+                meta = json.loads(row["meta_json"] or "{}") if row else {}
+                meta["touchedServerIds"] = []
+                conn.execute("UPDATE configs SET meta_json=? WHERE id=?",
+                             (json.dumps(meta), config_id))
             deployer = ChainDeployer(str(DATA_DIR))
-            result = deployer.deploy(runners, plan, config_id, on_hop_status=on_hop_statuses)
+            result = deployer.deploy(runners, plan, config_id,
+                                     on_hop_status=on_hop_statuses,
+                                     on_server_touched=on_server_touched)
             meta = {
                 "chain": True,
                 "hops": hops,
                 "hopDeployStatus": ["done"] * len(hops),
                 **result.meta,
                 **(result.bypass_meta or {}),
+                "touchedServerIds": touched_server_ids,
             }
             with connect() as conn:
                 conn.execute(
@@ -430,6 +544,7 @@ def run_chain_deploy_job(
                 "Deploy cancelled",
                 get_server_row=get_server_row,
                 server_target=server_target,
+                touched_server_ids=touched_server_ids,
             )
         except Exception as exc:
             log.exception("Chain deploy failed config=%s: %s", config_id, exc)
@@ -438,6 +553,7 @@ def run_chain_deploy_job(
                 exc,
                 get_server_row=get_server_row,
                 server_target=server_target,
+                touched_server_ids=touched_server_ids,
             )
 
     _run_deploy_job(config_id, _job)
