@@ -1,37 +1,29 @@
-.PHONY: install build-images dev stop status ssl-cert
+.PHONY: install install-api install-ui build-images dev dev-api dev-ui build build-ui ssl-cert
 
-install:
-	python3 -m venv .venv
-	.venv/bin/pip install -r requirements.txt
-	@chmod +x scripts/bootstrap-env.sh
-	@bash scripts/bootstrap-env.sh
-	@$(MAKE) build-images
-	@$(MAKE) dev
-	@echo ""
-	@echo "=== Вход в панель Hoplyra ==="
-	@echo "  Логин:    admin"
-	@echo "  Пароль:   admin"
-	@echo "  Смените пароль в разделе «Настройки» после первого входа."
-	@echo ""
+install: install-api install-ui build-images start-service
+
+start-service:
+	cd backend && bash setup-systemd.sh start
 
 ssl-cert:
-	@chmod +x scripts/generate-ssl.sh
-	./scripts/generate-ssl.sh
+	cd backend && bash scripts/generate-ssl.sh
 
 
 build-images:
 	@command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 || \
-	  (echo "==> podman/docker недоступен — образы будут собираться на VPS при деплое"; exit 0)
-	bash hoplyra/images/build-all.sh
+	  (echo "==> podman/docker не найден — образы будут собираться на VPS при деплое"; exit 0)
+	cd backend && bash hoplyra/images/build-all.sh
 
 dev:
-	@chmod +x setup-systemd.sh
-	./setup-systemd.sh start
+	./scripts/dev-local.sh
 
-stop:
-	@chmod +x setup-systemd.sh
-	./setup-systemd.sh stop
+install-api:
+	cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && bash scripts/bootstrap-env.sh
 
-status:
-	@chmod +x setup-systemd.sh
-	./setup-systemd.sh status
+install-ui:
+	@if command -v npm >/dev/null 2>&1; then (cd frontend && npm install); else echo "==> npm не найден — используется готовая статика из backend/hoplyra/static"; fi
+
+build-ui:
+	@if command -v npm >/dev/null 2>&1; then (cd frontend && npm run build && mkdir -p ../backend/hoplyra/static && cp -r dist/* ../backend/hoplyra/static/); else echo "==> npm не найден — используется готовая статика из backend/hoplyra/static"; fi
+
+build: build-ui

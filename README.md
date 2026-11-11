@@ -1,6 +1,6 @@
 <div align="center">
 
-![Hoplyra banner](assets/banner.png)
+![Hoplyra banner](backend/assets/banner.png)
 
 </div>
 
@@ -32,7 +32,7 @@ A typical VPN is one tunnel to one server. Hoplyra lets you **combine multiple p
 
 <div align="center">
 
-![Example chain AWG → Tor → Xray](assets/chain.png)
+![Example chain AWG → Tor → Xray](backend/assets/chain.png)
 
 </div>
 
@@ -91,7 +91,7 @@ Use it to spot overloaded nodes, offline hosts, and whether metrics collection i
 
 <div align="center">
 
-![Status monitoring](assets/status.png)
+![Status monitoring](backend/assets/status.png)
 
 </div>
 
@@ -107,7 +107,7 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 <div align="center">
 
-![SOCKS5 proxy flow](assets/proxy.png)
+![SOCKS5 proxy flow](backend/assets/proxy.png)
 
 </div>
 
@@ -117,11 +117,11 @@ The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or 
 
 | | ID | Protocol | Port |
 |:-:|---|----------|------|
-| <img src="assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | **WireGuard** | 51820/udp |
-| <img src="assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | **AmneziaWG 3.1** | 55424/udp |
-| <img src="assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | **OpenVPN** | 1194/udp or tcp |
-| <img src="assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | **Xray VLESS + TLS / REALITY** | 443/tcp |
-| <img src="assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | **Tor (SOCKS)** | 9050/tcp |
+| <img src="backend/assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | **WireGuard** | 51820/udp |
+| <img src="backend/assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | **AmneziaWG 3.1** | 55424/udp |
+| <img src="backend/assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | **OpenVPN** | 1194/udp or tcp |
+| <img src="backend/assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | **Xray VLESS + TLS / REALITY** | 443/tcp |
+| <img src="backend/assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | **Tor (SOCKS)** | 9050/tcp |
 
 ---
 
@@ -140,10 +140,10 @@ The dashboard is protected by a **local administrator account** (not a cloud sig
 
 | | Network | Address |
 |:-:|---------|---------|
-| <img src="assets/crypto/btc.png" width="44" alt="BTC"> | **Bitcoin** | `bc1q0u4pwuqxg7kt5y4p84lc8zzcawhzr3auzw005z` |
-| <img src="assets/crypto/eth.png" width="44" alt="ETH"> | **Ethereum** | `0xD3002c0967a8D28FDF67c2Df8488006e965B9a6A` |
-| <img src="assets/crypto/usdt.png" width="44" alt="USDT"> | **TRON (TRC-20)** | `TYUkmupkzCGzkio77Db7PKEDu4JN8JD1eb` |
-| <img src="assets/crypto/trx.png" width="44" alt="TRX"> | **TRON** | `TX7yRGo5xT2Mj5NBVhu7bdv58jmStHFuGZ` |
+| <img src="backend/assets/crypto/btc.png" width="44" alt="BTC"> | **Bitcoin** | `bc1q0u4pwuqxg7kt5y4p84lc8zzcawhzr3auzw005z` |
+| <img src="backend/assets/crypto/eth.png" width="44" alt="ETH"> | **Ethereum** | `0xD3002c0967a8D28FDF67c2Df8488006e965B9a6A` |
+| <img src="backend/assets/crypto/usdt.png" width="44" alt="USDT"> | **TRON (TRC-20)** | `TYUkmupkzCGzkio77Db7PKEDu4JN8JD1eb` |
+| <img src="backend/assets/crypto/trx.png" width="44" alt="TRX"> | **TRON** | `TX7yRGo5xT2Mj5NBVhu7bdv58jmStHFuGZ` |
 
 ---
 
