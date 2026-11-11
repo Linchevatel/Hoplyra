@@ -109,7 +109,7 @@ DNS = 1.1.1.1, 8.8.8.8
 PublicKey = {server_pub}
 Endpoint = {endpoint_host(server_host)}:{port}
 AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 """
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-wg-{config_id[:8]}"
@@ -286,6 +286,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
                 "serverPublicKey": server_pub,
                 "listenPort": port,
                 "hostAwg": True,
+                "interface": conf_name[:-5],
                 "subnet": subnet,
                 "awgVersion": ver_label,
                 "awgParams": awg.as_meta(),

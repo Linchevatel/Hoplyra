@@ -366,7 +366,7 @@ def rebuild_bypass_bundle_from_secrets(
         port=port,
         remark=remark,
     )
-    client_text = f"{json.dumps(client_cfg, indent=2, ensure_ascii=False)}\n\n{vless_uri}\n"
+    client_text = json.dumps(client_cfg, indent=2, ensure_ascii=False) + "\n"
     meta = bypass_meta_from_keys(
         vless_uuid=vless_uuid,
         public_key=public_key,

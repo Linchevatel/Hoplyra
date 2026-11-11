@@ -461,7 +461,7 @@ PostDown = ip rule del iif tun0 table 100 priority 100 2>/dev/null || true; ip r
 PublicKey = {exit_pub}
 Endpoint = {endpoint_host(plan.exit.server_host)}:{link_port}
 AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 """
         exit_compose = (
             "services:\n"
@@ -876,7 +876,7 @@ DNS = 1.1.1.1
 PublicKey = {server_pub}
 Endpoint = {endpoint_host(hop.server_host)}:51820
 AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 """
         service = compose_wg_service(
             f"cv-chain-wg-{self._resource_tag(config_id)}",
@@ -1495,7 +1495,7 @@ DNS = 1.1.1.1
 PublicKey = {server_pub}
 Endpoint = {endpoint_host(hop.server_host)}:51820
 AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 """
         compose = (
             "services:\n"

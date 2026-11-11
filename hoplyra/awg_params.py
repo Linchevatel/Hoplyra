@@ -650,7 +650,7 @@ def generate_awg3_1_params(
     random_trailers: bool = True,
     disable_cookies: bool = True,
 ) -> AwgObfuscationParams:
-    jc = random.randint(4, 6)
+    jc = random.randint(1, 3)
     jmin = 10
     jmax = 50
     s1, s2, s3, s4 = _rand_awg2_packet_sizes(with_hpk=header_protection)
@@ -693,7 +693,7 @@ def generate_auto_awg_params(
     - For v3.1: full parameter set (HeaderProtectionKey, ContentPaddingAddition,
       RandomTrailers, DisableCookies per rules, safe Jc/Jmin/Jmax, safe S1-S4 >= 12,
       unique non-overlapping H1-H4, and a random CPS mimicry profile from
-      QUIC/TLS/DNS/SIP/STUN).
+      QUIC/DNS/SIP/STUN).
     - For v2.0, v1.5, v1.0: only the parameters supported by each version.
     - If `overrides` dict is provided, manual values take precedence (advanced mode)
       and are strictly validated against compatibility rules.
@@ -721,19 +721,19 @@ def generate_auto_awg_params(
         canonical = aliases.get(key, key[0].lower() + key[1:] if key else key)
         if canonical != key:
             overrides[canonical] = overrides.pop(key)
-    profile_choice = overrides.pop("profile", None) or random.choice(SUPPORTED_CPS_PROFILES)
+    profile_choice = overrides.pop("profile", None) or random.choice(("quic", "dns", "stun", "sip"))
     if profile_choice not in SUPPORTED_CPS_PROFILES:
         raise AwgValidationError("Неизвестный CPS профиль")
 
     if is_v31:
         # For auto v3.1 profile: enable random trailers, header protection, content padding,
-        # disableCookies=False by default (safer under NAT load per Architect rules).
+        # Disable cookies for stable mobile handshakes.
         base = generate_awg3_1_params(
             profile=profile_choice,
             header_protection=True,
             content_padding=True,
             random_trailers=True,
-            disable_cookies=False,
+            disable_cookies=True,
         )
     elif is_v10:
         base = generate_awg1_0_params()
@@ -904,6 +904,7 @@ def build_awg_server_conf(
     psk_line = f"PresharedKey = {preshared_key}\n" if preshared_key else ""
     return f"""[Interface]
 Address = {server_ip_cidr}
+MTU = 1280
 ListenPort = {listen_port}
 PrivateKey = {server_priv}
 {awg.conf_lines()}
@@ -933,11 +934,12 @@ def build_awg_client_conf(
 PrivateKey = {client_priv}
 Address = {client_ip}
 DNS = {dns}
+MTU = 1280
 {awg.conf_lines()}
 
 [Peer]
 PublicKey = {server_pub}
 {psk_line}Endpoint = {endpoint_host(server_host)}:{listen_port}
 AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 """
