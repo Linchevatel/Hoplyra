@@ -82,7 +82,7 @@ ssl_enabled = bool(
     or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
 )
 
-app = FastAPI(title="Hoplyra API", version="1.5.0")
+app = FastAPI(title="Hoplyra API", version="1.5.1")
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
