@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+
+from hoplyra.dns_setup import HOST_DNS_SETUP
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -10,8 +12,7 @@ ProgressCb = Callable[[int, str], None]
 
 SETUP_MARKER = "/opt/hoplyra/.setup-done"
 
-HOST_SETUP_SCRIPT = r"""#!/bin/bash
-set -euo pipefail
+HOST_SETUP_SCRIPT = "#!/bin/bash\nset -euo pipefail\n" + HOST_DNS_SETUP + r"""
 
 log() { echo "[hoplyra-setup] $*"; }
 
@@ -199,6 +200,12 @@ def ensure_host_ready(
     prog(15, "Проверка Podman/Docker на VPS…")
 
     if not force and container_runtime_ready(runner):
+        code, out, err = runner.run(
+            "bash -s << 'HOPLYRA_DNS'\nset -euo pipefail\n"
+            + HOST_DNS_SETUP + "\nHOPLYRA_DNS", timeout=1200,
+        )
+        if code != 0:
+            raise RuntimeError(f"Подготовка DNS не удалась: {(err or out)[-1000:]}")
         prog(55, "Контейнерный runtime найден, настройка каталогов…")
         runner.run(
             "mkdir -p /opt/hoplyra/instances && "

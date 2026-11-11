@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+from hoplyra.dns_setup import HOST_DNS_SETUP
+
 import re
 import shlex
 from typing import Any
@@ -19,8 +21,7 @@ from hoplyra.wg_keys import generate_wg_psk
 AWG_READY_MARKER = "/opt/hoplyra/.awg-ready"
 CHAINVAULT_AWG_MARKER = "/opt/chainvault/.awg-ready"
 
-HOST_AWG_INSTALL = r"""#!/bin/bash
-set -euo pipefail
+HOST_AWG_INSTALL = "#!/bin/bash\nset -euo pipefail\n" + HOST_DNS_SETUP + r"""
 if command -v awg-quick >/dev/null 2>&1 && modprobe amneziawg 2>/dev/null; then
   exit 0
 fi
