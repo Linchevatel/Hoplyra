@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import ipaddress
+import os
 import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -89,18 +92,52 @@ def _open_tcp_socket(host: str, port: int, *, timeout: float) -> socket.socket:
     raise OSError(f"Cannot connect to {host}:{port}")
 
 
-def _connect_kwargs(target: ServerTarget) -> dict:
-    if not target.auth_secret:
-        raise ValueError("SSH password is required")
+def load_private_key(key_text: str) -> paramiko.PKey:
+    """Parse an unencrypted OpenSSH/PEM private key without logging key material."""
+    cleaned = (key_text or "").strip()
+    if not cleaned:
+        raise ValueError("SSH private key is required")
+    last_exc: Exception | None = None
+    for key_cls in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+        try:
+            return key_cls.from_private_key(io.StringIO(cleaned))
+        except paramiko.PasswordRequiredException as exc:
+            raise ValueError("Encrypted private keys with passphrase are not supported") from exc
+        except Exception as exc:
+            last_exc = exc
+    raise ValueError("Invalid SSH private key format") from last_exc
 
+
+def _connect_kwargs(target: ServerTarget) -> dict:
     connect_timeout, banner_timeout, auth_timeout = _ssh_timeouts()
-    return {
+    base = {
         "hostname": target.host,
         "port": target.port,
         "username": target.username,
         "timeout": connect_timeout,
         "banner_timeout": banner_timeout,
         "auth_timeout": auth_timeout,
+    }
+    auth_type = (target.auth_type or "password").lower()
+    if auth_type == "key":
+        if not target.auth_secret:
+            raise ValueError("SSH private key is required")
+        return {
+            **base,
+            "pkey": load_private_key(target.auth_secret),
+            "allow_agent": False,
+            "look_for_keys": False,
+        }
+    if auth_type == "agent":
+        return {
+            **base,
+            "allow_agent": True,
+            "look_for_keys": True,
+        }
+    if not target.auth_secret:
+        raise ValueError("SSH password is required")
+    return {
+        **base,
         "auth_strategy": _PasswordOnlyAuth(target.username, target.auth_secret),
         "allow_agent": False,
         "look_for_keys": False,
@@ -148,6 +185,14 @@ def _sshpass_available() -> bool:
     if sys.platform == "win32":
         return False
     return shutil.which("sshpass") is not None and shutil.which("ssh") is not None
+
+
+def _ssh_subprocess_available(target: ServerTarget) -> bool:
+    if sys.platform == "win32":
+        return False
+    if (target.auth_type or "password").lower() == "password":
+        return _sshpass_available()
+    return shutil.which("ssh") is not None
 
 
 def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tuple[int, str, str]:
@@ -246,7 +291,7 @@ class RemoteRunner:
                     time.sleep(min(5 * (attempt + 1), 15))
                     continue
 
-        if _sshpass_available():
+        if _ssh_subprocess_available(self.target):
             try:
                 return _run_ssh_subprocess(self.target, command, timeout=timeout)
             except (TimeoutError, OSError, subprocess.SubprocessError) as exc:
@@ -312,7 +357,7 @@ def test_ssh_auth(target: ServerTarget) -> tuple[bool, str | None]:
         detail = (err or out or "SSH authentication failed").strip()
         return False, detail[:500]
     except Exception as exc:
-        if _sshpass_available() and _is_transient_ssh_error(exc):
+        if _ssh_subprocess_available(target) and _is_transient_ssh_error(exc):
             try:
                 code, out, err = _run_ssh_subprocess(target, "echo HOPLYRA_OK", timeout=30)
                 if code == 0 and "HOPLYRA_OK" in out:

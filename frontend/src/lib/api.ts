@@ -186,7 +186,8 @@ export interface ServerCreatePayload {
   host: string
   port?: number
   username?: string
-  authSecret: string
+  authType?: 'password' | 'key' | 'agent'
+  authSecret?: string
   location?: string
   tags?: string[]
   notes?: string

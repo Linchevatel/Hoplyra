@@ -56,7 +56,7 @@ from hoplyra.chains.planner import build_plan, validate_chain
 from hoplyra.chains.route_test import test_chain_route
 from hoplyra.chains.preflight import ChainPreflightError, recheck_runners_online, verify_chain_servers
 from hoplyra.protocols import DEPLOYERS, get_deployer_for_config
-from hoplyra.remote import RemoteRunner, ServerTarget, is_local_host, probe_server, test_ssh_auth
+from hoplyra.remote import RemoteRunner, ServerTarget, is_local_host, load_private_key, probe_server, test_ssh_auth
 from hoplyra.host_setup import ensure_host_ready
 from hoplyra.server_prepare import get_prepare_job, start_prepare_job
 from hoplyra.server_metrics import CONTROL_SERVER_ID, collect_local_metrics, metrics_for_target
@@ -83,7 +83,7 @@ ssl_enabled = bool(
     or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
 )
 
-app = FastAPI(title="Hoplyra API", version="1.5.1")
+app = FastAPI(title="Hoplyra API", version="1.5.2")
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -125,7 +125,8 @@ class ServerCreate(BaseModel):
     host: str
     port: int = Field(default=22, ge=1, le=65535)
     username: str = "root"
-    authSecret: str = Field(min_length=1)
+    authType: Literal["password", "key", "agent"] = "password"
+    authSecret: str | None = None
     location: str | None = None
     tags: list[str] = Field(default_factory=list)
     notes: str | None = None
@@ -172,12 +173,25 @@ class DeployRequest(BaseModel):
 
 
 def _normalize_auth(body: ServerCreate) -> ServerTarget:
-    secret = body.authSecret.strip()
-    upper = secret.upper()
-    if "BEGIN" in upper and "PRIVATE KEY" in upper:
-        raise HTTPException(400, "Нужен пароль SSH (root), не содержимое ключа.")
-    if secret.startswith("~/.ssh/") or (secret.startswith("/") and "id_" in secret):
-        raise HTTPException(400, "Нужен пароль SSH пользователя, не путь к ключу.")
+    auth_type = body.authType or "password"
+    secret = (body.authSecret or "").strip()
+    if auth_type == "password":
+        if not secret:
+            raise HTTPException(400, "Нужен пароль SSH.")
+        upper = secret.upper()
+        if "BEGIN" in upper and "PRIVATE KEY" in upper:
+            raise HTTPException(400, "Выбран вход по паролю, но вставлен приватный ключ. Переключите тип на «SSH-ключ».")
+        if secret.startswith("~/.ssh/") or (secret.startswith("/") and "id_" in secret):
+            raise HTTPException(400, "Нужен пароль SSH пользователя, не путь к ключу.")
+    elif auth_type == "key":
+        if not secret:
+            raise HTTPException(400, "Нужен приватный SSH-ключ.")
+        try:
+            load_private_key(secret)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        secret = ""
     try:
         host = validate_host(body.host)
     except ValueError as exc:
@@ -186,8 +200,8 @@ def _normalize_auth(body: ServerCreate) -> ServerTarget:
         host=host,
         port=body.port,
         username=body.username.strip(),
-        auth_type="password",
-        auth_secret=secret,
+        auth_type=auth_type,
+        auth_secret=secret or None,
     )
 
 
@@ -200,14 +214,23 @@ def _get_server_row(server_id: str) -> Any:
 
 
 def _server_target(row: Any) -> ServerTarget:
+    auth_type = (row["auth_type"] or "password").lower()
+    if auth_type == "agent":
+        return ServerTarget(
+            host=row["host"],
+            port=row["port"],
+            username=row["username"],
+            auth_type="agent",
+            auth_secret=None,
+        )
     secret = decrypt_auth_secret(row["auth_secret"])
-    if secret is None:
+    if not secret:
         raise HTTPException(500, "Server credentials missing")
     return ServerTarget(
         host=row["host"],
         port=row["port"],
         username=row["username"],
-        auth_type="password",
+        auth_type=auth_type,
         auth_secret=secret,
     )
 

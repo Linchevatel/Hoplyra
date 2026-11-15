@@ -549,7 +549,8 @@ function AddServerForm({
   onClose: () => void
   onAdd: (data: Omit<VpsServer, 'id' | 'status' | 'port'> & {
     port?: number
-    authSecret: string
+    authType?: 'password' | 'key' | 'agent'
+    authSecret?: string
   }) => Promise<void>
 }) {
   const { t } = useI18n()
@@ -557,7 +558,9 @@ function AddServerForm({
   const [host, setHost] = useState('')
   const [port, setPort] = useState('22')
   const [username, setUsername] = useState('root')
+  const [authType, setAuthType] = useState<'password' | 'key' | 'agent'>('password')
   const [password, setPassword] = useState('')
+  const [privateKey, setPrivateKey] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -565,7 +568,8 @@ function AddServerForm({
     e.preventDefault()
     setFormError(null)
     if (submitting) return
-    if (!name.trim() || !host.trim() || !password) {
+    const secret = authType === 'password' ? password : authType === 'key' ? privateKey.trim() : ''
+    if (!name.trim() || !host.trim() || (authType !== 'agent' && !secret)) {
       setFormError(t('dashboard.servers.fillRequiredFields'))
       return
     }
@@ -584,7 +588,8 @@ function AddServerForm({
         host: host.trim(),
         port: port === '' ? 22 : Number(port),
         username: username.trim() || 'root',
-        authSecret: password,
+        authType,
+        ...(authType !== 'agent' ? { authSecret: secret } : {}),
       })
       onClose()
     } catch (err) {
@@ -619,15 +624,80 @@ function AddServerForm({
           <Input label={t('dashboard.servers.user')} value={username} onChange={(e) => setUsername(e.target.value)} />
 
           <div className="sm:col-span-2">
-            <Input
-              label={t('dashboard.servers.sshPassword')}
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              hint={t('dashboard.servers.passwordHint')}
-              required
-            />
+            <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+              {t('dashboard.servers.authType')}
+            </label>
+            <div className="inline-flex flex-wrap rounded-lg border border-white/10 p-0.5 gap-0.5 mb-3">
+              {([
+                { id: 'password', label: t('dashboard.servers.authPassword') },
+                { id: 'key', label: t('dashboard.servers.authKey') },
+                { id: 'agent', label: t('dashboard.servers.authAgent') },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setAuthType(opt.id)}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer',
+                    authType === opt.id
+                      ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5',
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {authType === 'password' && (
+              <Input
+                label={t('dashboard.servers.sshPassword')}
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                hint={t('dashboard.servers.passwordHint')}
+                required
+              />
+            )}
+
+            {authType === 'key' && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-zinc-300">
+                    {t('dashboard.servers.sshKeyLabel')}
+                  </label>
+                  <label className="text-xs text-accent-cyan hover:underline cursor-pointer">
+                    {t('dashboard.servers.uploadKeyFile')}
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".pem,.key,text/plain"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        file.text().then((txt) => setPrivateKey(txt)).catch(() => {})
+                      }}
+                    />
+                  </label>
+                </div>
+                <textarea
+                  rows={4}
+                  value={privateKey}
+                  onChange={(e) => setPrivateKey(e.target.value)}
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  className="w-full rounded-xl border border-white/10 bg-surface-900/80 px-3 py-2 text-xs font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-accent-cyan/50"
+                  required
+                />
+                <p className="text-[11px] text-text-muted">{t('dashboard.servers.keyHint')}</p>
+              </div>
+            )}
+
+            {authType === 'agent' && (
+              <p className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs text-zinc-400">
+                {t('dashboard.servers.agentHint')}
+              </p>
+            )}
           </div>
 
           {formError && !isLocalHost(host) && (

@@ -16,7 +16,8 @@ interface DashboardContextValue {
   addServer: (
     server: Omit<VpsServer, 'id' | 'status' | 'port'> & {
       port?: number
-      authSecret: string
+      authType?: 'password' | 'key' | 'agent'
+      authSecret?: string
     },
   ) => Promise<void>
   updateServer: (id: string, patch: Partial<Pick<VpsServer, 'tags' | 'notes' | 'name'>>) => void

@@ -601,7 +601,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     async (
       data: Omit<VpsServer, 'id' | 'status' | 'port'> & {
         port?: number
-        authSecret: string
+        authType?: 'password' | 'key' | 'agent'
+        authSecret?: string
       },
     ) => {
       if (isLocalHost(data.host)) {
@@ -623,6 +624,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             host: data.host,
             port: data.port,
             username: data.username,
+            authType: data.authType,
             authSecret: data.authSecret,
             tags: data.tags,
             notes: data.notes,
