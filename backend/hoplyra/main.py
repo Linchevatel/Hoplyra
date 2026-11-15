@@ -83,7 +83,7 @@ ssl_enabled = bool(
     or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
 )
 
-app = FastAPI(title="Hoplyra API", version="1.5.2")
+app = FastAPI(title="Hoplyra API", version="1.5.3", docs_url=None, redoc_url=None, openapi_url=None)
 log = logging.getLogger("hoplyra")
 
 app.add_middleware(
@@ -1551,7 +1551,10 @@ def _mount_frontend(app: FastAPI) -> None:
     def spa_fallback(spa_path: str) -> FileResponse:
         if spa_path.startswith("api"):
             raise HTTPException(404)
-        candidate = dist / spa_path
+        dist_root = dist.resolve()
+        candidate = (dist_root / spa_path).resolve()
+        if not candidate.is_relative_to(dist_root):
+            raise HTTPException(404)
         if spa_path and candidate.is_file():
             headers = {}
             if candidate.suffix == ".html":

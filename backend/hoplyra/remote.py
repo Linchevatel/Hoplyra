@@ -196,34 +196,62 @@ def _ssh_subprocess_available(target: ServerTarget) -> bool:
 
 
 def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tuple[int, str, str]:
-    if not target.auth_secret:
-        raise ValueError("SSH password is required")
-    proc = subprocess.run(
-        [
-            "sshpass",
-            "-p",
-            target.auth_secret,
-            "ssh",
-            "-o",
-            "BatchMode=no",
-            "-o",
-            "PreferredAuthentications=password,keyboard-interactive",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            f"ConnectTimeout={min(max(timeout, 5), 30)}",
-            "-p",
-            str(target.port),
-            f"{target.username}@{target.host}",
-            command,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    return proc.returncode, proc.stdout, proc.stderr
+    auth_type = (target.auth_type or "password").lower()
+    common_ssh = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        f"ConnectTimeout={min(max(timeout, 5), 30)}",
+        "-p",
+        str(target.port),
+    ]
+    dest = f"{target.username}@{target.host}"
+    key_path: str | None = None
+    try:
+        if auth_type == "key":
+            if not target.auth_secret:
+                raise ValueError("SSH private key is required")
+            fd, key_path = tempfile.mkstemp(prefix="hoplyra-key-", suffix=".pem")
+            os.chmod(key_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(target.auth_secret.strip() + "\n")
+            cmd = [*common_ssh, "-o", "BatchMode=yes", "-i", key_path, dest, command]
+            env = None
+        elif auth_type == "agent":
+            cmd = [*common_ssh, "-o", "BatchMode=yes", dest, command]
+            env = None
+        else:
+            if not target.auth_secret:
+                raise ValueError("SSH password is required")
+            cmd = [
+                "sshpass",
+                "-e",
+                *common_ssh,
+                "-o",
+                "BatchMode=no",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                dest,
+                command,
+            ]
+            env = {**os.environ, "SSHPASS": target.auth_secret}
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    finally:
+        if key_path:
+            try:
+                os.unlink(key_path)
+            except OSError:
+                pass
 
 
 @contextmanager

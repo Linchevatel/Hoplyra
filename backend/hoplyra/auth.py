@@ -19,12 +19,19 @@ _PUBLIC_API = {
 }
 
 
+_EPHEMERAL_SESSION_SECRET: str | None = None
+
+
 def session_secret_key() -> str:
+    global _EPHEMERAL_SESSION_SECRET
     for env_name in ("HOPLYRA_SESSION_SECRET", "HOPLYRA_SECRET_KEY"):
         value = os.environ.get(env_name, "").strip()
         if value:
             return value
-    return "hoplyra-dev-session-insecure"
+    if _EPHEMERAL_SESSION_SECRET is None:
+        import secrets
+        _EPHEMERAL_SESSION_SECRET = secrets.token_urlsafe(32)
+    return _EPHEMERAL_SESSION_SECRET
 
 
 def is_authenticated(request: Request) -> bool:
