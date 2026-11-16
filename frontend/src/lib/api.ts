@@ -388,6 +388,7 @@ export interface ConfigPeer {
   clientIp: string
   clientConfig: string
   amneziaVpnUri?: string | null
+  vlessUri?: string | null
   createdAt: string
 }
 

@@ -5,6 +5,7 @@ from hoplyra.hosts import endpoint_host
 import base64
 import json
 import secrets
+import urllib.parse
 import uuid
 from typing import Any
 
@@ -14,7 +15,21 @@ from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption,
 REALITY_DEST = "swdist.apple.com:443"
 REALITY_SERVER_NAMES = ["swdist.apple.com", "updates.cdn-apple.com", "gateway.icloud.com"]
 REALITY_SERVER_NAME = "swdist.apple.com"
-REALITY_FINGERPRINT = "qq"
+REALITY_FINGERPRINT = "chrome"
+DEFAULT_FRAGMENT_SETTINGS = {
+    "tcp": [
+        {
+            "type": "fragment",
+            "settings": {
+                "delay": "0",
+                "delays": ["0"],
+                "length": "10-20",
+                "lengths": ["10-20"],
+                "packets": "tlshello",
+            },
+        }
+    ]
+}
 
 RU_DIRECT_DOMAINS: tuple[str, ...] = (
     "domain:max.ru",
@@ -269,6 +284,20 @@ def build_bypass_client_config(
                         "shortId": short_id,
                         "fingerprint": REALITY_FINGERPRINT,
                     },
+                    "sockopt": {
+                        "dialerProxy": "fragment",
+                    },
+                },
+            },
+            {
+                "tag": "fragment",
+                "protocol": "freedom",
+                "settings": {
+                    "fragment": {
+                        "packets": "tlshello",
+                        "length": "10-20",
+                        "interval": "0",
+                    }
                 },
             },
             {"tag": "dns-out", "protocol": "dns"},
@@ -288,12 +317,18 @@ def build_vless_reality_uri(
     port: int = 443,
     remark: str = "Hoplyra",
     server_name: str = REALITY_SERVER_NAME,
+    fragment: bool = True,
 ) -> str:
-    tag = remark.replace(" ", "%20")
+    tag = urllib.parse.quote(remark, safe="")
+    fm_part = ""
+    if fragment:
+        fm_encoded = urllib.parse.quote(json.dumps(DEFAULT_FRAGMENT_SETTINGS, separators=(",", ":")), safe="")
+        fm_part = f"&fm={fm_encoded}"
     return (
         f"vless://{vless_uuid}@{endpoint_host(server_host)}:{port}"
         f"?encryption=none&flow=xtls-rprx-vision&security=reality"
         f"&sni={server_name}&fp={REALITY_FINGERPRINT}&pbk={public_key}&sid={short_id}&type=tcp"
+        f"{fm_part}"
         f"#{tag}"
     )
 

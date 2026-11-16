@@ -254,6 +254,21 @@ def _build_peer_amnezia_uri(cfg: dict[str, Any], peer_name: str, client_conf: st
         return None
 
 
+def _extract_xray_peer_vless_uri(cfg: dict[str, Any], peer_uuid: str) -> str | None:
+    if cfg.get("protocol") != "xray":
+        return None
+    meta = json.loads(cfg.get("meta_json") or "{}")
+    base_uri = meta.get("vlessUri") or ""
+    if not base_uri:
+        return None
+    old_uuid = ""
+    m = re.search(r"vless://([0-9a-fA-F-]{36})@", base_uri)
+    if m:
+        old_uuid = m.group(1)
+        return base_uri.replace(old_uuid, peer_uuid)
+    return None
+
+
 def list_peers(config_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
@@ -272,6 +287,7 @@ def list_peers(config_id: str) -> list[dict[str, Any]]:
             "clientIp": r["client_ip"],
             "clientConfig": r["client_config"],
             "amneziaVpnUri": _build_peer_amnezia_uri(cfg, r["name"], r["client_config"]),
+            "vlessUri": _extract_xray_peer_vless_uri(cfg, r["public_key"]),
             "createdAt": r["created_at"],
         }
         for r in rows
@@ -333,6 +349,7 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
         "clientIp": client_ip,
         "clientConfig": client_conf,
         "amneziaVpnUri": _build_peer_amnezia_uri(cfg, name.strip(), client_conf),
+        "vlessUri": _extract_xray_peer_vless_uri(cfg, pub_key),
         "createdAt": now,
     }
 

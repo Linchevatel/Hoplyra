@@ -298,7 +298,7 @@ function ClientConfigModalContent({
               {/* Additional peers */}
               {peers.map((p) => {
                 const peerBundle = buildClientConfigBundle(
-                  { ...liveConfig, clientConfig: p.clientConfig, amneziaVpnUri: p.amneziaVpnUri ?? undefined, vlessUri: undefined },
+                  { ...liveConfig, clientConfig: p.clientConfig, amneziaVpnUri: p.amneziaVpnUri ?? undefined, vlessUri: p.vlessUri ?? undefined },
                   server,
                   servers,
                 )

@@ -420,7 +420,7 @@ class ChainDeployer:
         )
         exit_runner.run(
             "iptables -I FORWARD 1 -i wg-link -j ACCEPT 2>/dev/null; "
-            f"{wan_wg_forward_up_cmd("wg-link")}"
+            f"{wan_wg_forward_up_cmd('wg-link')}"
         )
 
     def _deploy_wg_link(
