@@ -35,7 +35,14 @@ def session_secret_key() -> str:
 
 
 def is_authenticated(request: Request) -> bool:
-    return bool(request.session.get("authenticated"))
+    if not request.session.get("authenticated"):
+        return False
+    sv = request.session.get("sv")
+    if sv is None:
+        return False
+    from hoplyra.panel_auth import get_session_version
+
+    return sv == get_session_version(str(request.session.get("user") or "admin"))
 
 
 def require_authenticated(request: Request) -> None:

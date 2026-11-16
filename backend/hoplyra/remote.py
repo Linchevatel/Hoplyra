@@ -44,10 +44,42 @@ class ServerTarget:
     username: str
     auth_type: str = "password"
     auth_secret: str | None = None
+    host_fingerprint: str | None = None
 
     @property
     def is_local(self) -> bool:
         return is_local_host(self.host)
+
+
+class _TofuHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    def __init__(self, target: ServerTarget) -> None:
+        self.target = target
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        import base64
+        import hashlib
+
+        digest = base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode("ascii").rstrip("=")
+        fp = f"SHA256:{digest}"
+        expected = (self.target.host_fingerprint or "").strip()
+        if expected and expected != fp:
+            raise paramiko.SSHException(
+                f"SSH host key mismatch for {self.target.host}: expected {expected}, got {fp}"
+            )
+        if not expected:
+            self.target.host_fingerprint = fp
+            try:
+                from hoplyra.db import connect
+
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE servers SET host_fingerprint = ? "
+                        "WHERE host = ? AND port = ? AND (host_fingerprint IS NULL OR host_fingerprint = '')",
+                        (fp, self.target.host, self.target.port),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
 
 
 class _PasswordOnlyAuth:
@@ -264,7 +296,7 @@ def ssh_client(target: ServerTarget) -> Iterator[paramiko.SSHClient]:
     with _SSH_GATE:
         for attempt in range(_SSH_CONNECT_ATTEMPTS):
             client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.set_missing_host_key_policy(_TofuHostKeyPolicy(target))
             try:
                 _connect_ssh_once(client, target)
             except (TimeoutError, paramiko.SSHException, OSError) as exc:

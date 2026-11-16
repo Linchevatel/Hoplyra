@@ -83,16 +83,26 @@ ssl_enabled = bool(
     or os.environ.get("HOPLYRA_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes")
 )
 
-app = FastAPI(title="Hoplyra API", version="1.5.3", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Hoplyra API", version="1.6.0", docs_url=None, redoc_url=None, openapi_url=None)
 log = logging.getLogger("hoplyra")
 
+_cors_origins = [o.strip() for o in os.environ.get("HOPLYRA_CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 app.add_middleware(SessionAuthMiddleware)
 app.add_middleware(
     SessionMiddleware,
@@ -215,6 +225,7 @@ def _get_server_row(server_id: str) -> Any:
 
 def _server_target(row: Any) -> ServerTarget:
     auth_type = (row["auth_type"] or "password").lower()
+    fp = row["host_fingerprint"] if "host_fingerprint" in row.keys() else None
     if auth_type == "agent":
         return ServerTarget(
             host=row["host"],
@@ -222,6 +233,7 @@ def _server_target(row: Any) -> ServerTarget:
             username=row["username"],
             auth_type="agent",
             auth_secret=None,
+            host_fingerprint=fp,
         )
     secret = decrypt_auth_secret(row["auth_secret"])
     if not secret:
@@ -232,6 +244,7 @@ def _server_target(row: Any) -> ServerTarget:
         username=row["username"],
         auth_type=auth_type,
         auth_secret=secret,
+        host_fingerprint=fp,
     )
 
 
@@ -456,7 +469,9 @@ def health() -> dict[str, str]:
 
 @app.get("/api/auth/me")
 def auth_me(request: Request) -> dict[str, Any]:
-    if request.session.get("authenticated"):
+    from hoplyra.auth import is_authenticated
+
+    if is_authenticated(request):
         return {
             "authenticated": True,
             "username": request.session.get("user") or admin_username(),
@@ -470,8 +485,11 @@ def auth_me(request: Request) -> dict[str, Any]:
 def auth_login(body: LoginRequest, request: Request) -> dict[str, Any]:
     if not verify_admin_credentials(body.username, body.password):
         raise HTTPException(401, "invalid_credentials")
+    from hoplyra.panel_auth import get_session_version
+
     request.session["authenticated"] = True
     request.session["user"] = body.username.strip()
+    request.session["sv"] = get_session_version(request.session["user"])
     return {
         "ok": True,
         "username": request.session["user"],
@@ -487,12 +505,16 @@ def auth_logout(request: Request) -> dict[str, bool]:
 
 @app.post("/api/auth/change-password")
 def auth_change_password(body: ChangePasswordRequest, request: Request) -> dict[str, bool]:
-    if not request.session.get("authenticated"):
+    from hoplyra.auth import is_authenticated
+    from hoplyra.panel_auth import get_session_version
+
+    if not is_authenticated(request):
         raise HTTPException(401, "Unauthorized")
     try:
         change_admin_password(body.currentPassword, body.newPassword)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    request.session["sv"] = get_session_version(str(request.session.get("user") or "admin"))
     return {"ok": True}
 
 
@@ -1461,6 +1483,7 @@ def delete_config(config_id: str) -> dict[str, bool]:
             return {"ok": True}
         cfg_dict = dict(cfg)
         strict_teardown = cfg_dict.get("status") == "active"
+        conn.execute("DELETE FROM config_peers WHERE config_id = ?", (config_id,))
         conn.execute("DELETE FROM configs WHERE id = ?", (config_id,))
 
     _cleanup_remote_config_async(cfg_dict, strict=strict_teardown)
@@ -1477,6 +1500,49 @@ def _get_config_and_server(config_id: str) -> tuple[Any, Any]:
     if not row:
         raise HTTPException(404, "Server not found")
     return cfg, row
+
+
+class PeerCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+@app.get("/api/configs/{config_id}/peers")
+def get_config_peers(config_id: str) -> list[dict[str, Any]]:
+    from hoplyra.peers import list_peers
+
+    _get_config_and_server(config_id)
+    return list_peers(config_id)
+
+
+@app.post("/api/configs/{config_id}/peers")
+def add_config_peer(config_id: str, body: PeerCreateRequest) -> dict[str, Any]:
+    from hoplyra.peers import create_peer
+
+    _, srv_row = _get_config_and_server(config_id)
+    target = _server_target(srv_row)
+    try:
+        runner = RemoteRunner(target)
+        return create_peer(config_id, body.name, runner)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.delete("/api/configs/{config_id}/peers/{peer_id}")
+def delete_config_peer(config_id: str, peer_id: str) -> dict[str, str]:
+    from hoplyra.peers import revoke_peer
+
+    _, srv_row = _get_config_and_server(config_id)
+    target = _server_target(srv_row)
+    try:
+        runner = RemoteRunner(target)
+        revoke_peer(config_id, peer_id, runner)
+        return {"status": "revoked"}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.get("/api/configs/{config_id}/live")

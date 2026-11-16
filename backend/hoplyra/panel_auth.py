@@ -74,6 +74,20 @@ def verify_admin_credentials(username: str, password: str) -> bool:
     )
 
 
+def get_session_version(username: str = "admin") -> int:
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT session_version FROM panel_auth WHERE username = ?",
+                (username,),
+            ).fetchone()
+        if row and row["session_version"] is not None:
+            return int(row["session_version"])
+    except Exception:
+        pass
+    return 1
+
+
 def change_admin_password(current_password: str, new_password: str) -> None:
     admin = get_admin()
     if not admin:
@@ -88,7 +102,7 @@ def change_admin_password(current_password: str, new_password: str) -> None:
         raise ValueError("Новый пароль совпадает с текущим")
     with connect() as conn:
         conn.execute(
-            "UPDATE panel_auth SET password_hash=?, updated_at=? WHERE username=?",
+            "UPDATE panel_auth SET password_hash=?, updated_at=?, session_version=COALESCE(session_version, 1)+1 WHERE username=?",
             (hash_password(new_password), _now(), username),
         )
 

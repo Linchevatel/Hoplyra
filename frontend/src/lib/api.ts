@@ -379,3 +379,31 @@ export function fetchClientConfig(id: string): Promise<{ protocol: string; confi
 export function generateAwg(version: string, profile: string) {
   return request<{ params: AwgParams }>(`/api/awg/generate?version=${encodeURIComponent(version)}&profile=${encodeURIComponent(profile)}`)
 }
+
+export interface ConfigPeer {
+  id: string
+  configId: string
+  name: string
+  publicKey: string
+  clientIp: string
+  clientConfig: string
+  amneziaVpnUri?: string | null
+  createdAt: string
+}
+
+export function fetchConfigPeers(configId: string): Promise<ConfigPeer[]> {
+  return request<ConfigPeer[]>(`/api/configs/${configId}/peers`)
+}
+
+export function createConfigPeer(configId: string, name: string): Promise<ConfigPeer> {
+  return request<ConfigPeer>(`/api/configs/${configId}/peers`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function deleteConfigPeer(configId: string, peerId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/api/configs/${configId}/peers/${peerId}`, {
+    method: 'DELETE',
+  })
+}

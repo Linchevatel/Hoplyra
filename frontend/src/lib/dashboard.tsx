@@ -500,7 +500,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (skipConfigsPersist.current || apiEnabled) return
-    localStorage.setItem(CONFIGS_KEY, JSON.stringify(configs))
+    localStorage.setItem(CONFIGS_KEY, JSON.stringify(configs.map(({ clientConfig: _cc, ...rest }) => rest)))
   }, [configs, apiEnabled])
 
   useEffect(() => {

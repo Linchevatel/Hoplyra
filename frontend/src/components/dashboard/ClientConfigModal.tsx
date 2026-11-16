@@ -40,6 +40,58 @@ function ClientConfigModalContent({
   const [actionError, setActionError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
   const [loaded, setLoaded] = useState(config.id.startsWith('demo-'))
+  const [peers, setPeers] = useState<api.ConfigPeer[]>([])
+  const [peerName, setPeerName] = useState('')
+  const [peerBusy, setPeerBusy] = useState(false)
+  const [peerError, setPeerError] = useState<string | null>(null)
+  const [copiedPeerId, setCopiedPeerId] = useState<string | null>(null)
+  const [copiedPeerLinkId, setCopiedPeerLinkId] = useState<string | null>(null)
+  const [qrPeerId, setQrPeerId] = useState<string | null>(null)
+  const supportsPeers =
+    (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn') &&
+    !liveConfig.hops?.length &&
+    liveConfig.status === 'active' &&
+    !liveConfig.id.startsWith('demo-')
+
+  useEffect(() => {
+    if (!supportsPeers) return
+    let active = true
+    api.fetchConfigPeers(liveConfig.id)
+      .then((list) => { if (active) setPeers(list) })
+      .catch(() => {})
+    return () => { active = false }
+  }, [liveConfig.id, supportsPeers])
+
+  async function handleAddPeer() {
+    const trimmed = peerName.trim()
+    if (!trimmed || peerBusy) return
+    setPeerBusy(true)
+    setPeerError(null)
+    try {
+      const created = await api.createConfigPeer(liveConfig.id, trimmed)
+      setPeers((prev) => [...prev, created])
+      setPeerName('')
+    } catch (err) {
+      setPeerError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      setPeerBusy(false)
+    }
+  }
+
+  async function handleRevokePeer(peerId: string) {
+    if (peerBusy) return
+    setPeerBusy(true)
+    setPeerError(null)
+    try {
+      await api.deleteConfigPeer(liveConfig.id, peerId)
+      setPeers((prev) => prev.filter((p) => p.id !== peerId))
+    } catch (err) {
+      setPeerError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      setPeerBusy(false)
+    }
+  }
+
   const [repairing, setRepairing] = useState(false)
   const [loadingConfig, setLoadingConfig] = useState(() =>
     !config.id.startsWith('demo-') && !config.id.startsWith('pending'),
@@ -133,7 +185,7 @@ function ClientConfigModalContent({
         {actionError && <p role="alert" className="text-rose-400">{actionError}</p>}
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="min-w-0">
-            <h3 className="font-semibold">{t('dashboard.configs.clientConfig')}</h3>
+            <h3 className="font-semibold">{supportsPeers ? t('common.clients') : t('dashboard.configs.clientConfig')}</h3>
             <p className="text-xs text-text-muted mt-0.5">
               {PROTOCOLS[liveConfig.protocol]?.label ?? liveConfig.protocol} · {server.name}
               {loadingConfig ? ' · …' : ''}
@@ -175,7 +227,7 @@ function ClientConfigModalContent({
           </button>
         </div>
 
-        {bundle.supportsQr && (
+        {!supportsPeers && bundle.supportsQr && (
           <div className="flex flex-col items-center mb-4">
             <img
               src={qrCodeUrl(bundle.qrPayload, 200)}
@@ -192,6 +244,148 @@ function ClientConfigModalContent({
           </div>
         )}
 
+        {supportsPeers ? (
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={peerName}
+                onChange={(e) => setPeerName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddPeer() } }}
+                placeholder="Имя устройства (напр. iPhone)"
+                className="flex-1 rounded-xl border border-white/10 bg-surface-900/80 px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-accent-cyan/50"
+              />
+              <Button size="sm" disabled={peerBusy || !peerName.trim()} onClick={handleAddPeer}>
+                Добавить
+              </Button>
+            </div>
+            {peerError && <p className="text-xs text-rose-400">{peerError}</p>}
+
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
+              {/* Primary client */}
+              <div className="rounded-xl border border-accent-cyan/25 bg-accent-cyan/[0.04] p-3 text-xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-zinc-100 truncate">Основной клиент</span>
+                    <span className="px-1.5 py-0.5 rounded bg-accent-cyan/15 text-accent-cyan text-[10px] font-medium">Primary</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {bundle.shareLink && (
+                      <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleCopyLink} title={bundle.shareLink.scheme + '://'}>
+                        {copiedLink ? <Check size={13} /> : `${bundle.shareLink.scheme}://`}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleCopyFile} title="Скопировать конфиг">
+                      {copiedFile ? <Check size={13} /> : <Copy size={13} />}
+                    </Button>
+                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleDownload} title="Скачать .conf">
+                      <Download size={13} />
+                    </Button>
+                    {bundle.qrPayload && (
+                      <Button size="sm" variant="ghost" onClick={() => setQrPeerId(qrPeerId === 'primary' ? null : 'primary')}>
+                        QR
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {qrPeerId === 'primary' && bundle.qrPayload && (
+                  <div className="pt-2 flex justify-center">
+                    <img src={qrCodeUrl(bundle.qrPayload, 176)} alt="QR" width={176} height={176} className="rounded-xl bg-white p-2" />
+                  </div>
+                )}
+              </div>
+
+              {/* Additional peers */}
+              {peers.map((p) => {
+                const peerBundle = buildClientConfigBundle(
+                  { ...liveConfig, clientConfig: p.clientConfig, amneziaVpnUri: p.amneziaVpnUri ?? undefined, vlessUri: undefined },
+                  server,
+                  servers,
+                )
+                const peerShareUri = peerBundle.shareLink?.uri
+                const peerScheme = peerBundle.shareLink?.scheme ?? 'vpn'
+                const peerQr = peerBundle.qrPayload
+                const peerAddr = p.clientIp.includes('.') ? `${p.clientIp}/32` : p.clientIp
+                return (
+                  <div key={p.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-medium text-zinc-200 truncate">{p.name}</p>
+                        <p className="text-[11px] text-text-muted font-mono">{peerAddr}</p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {peerShareUri && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            title={`${peerScheme}://`}
+                            onClick={() => {
+                              copyToClipboard(peerShareUri).catch(() => {})
+                              setCopiedPeerLinkId(p.id)
+                              setTimeout(() => setCopiedPeerLinkId(null), 1500)
+                            }}
+                          >
+                            {copiedPeerLinkId === p.id ? <Check size={13} /> : `${peerScheme}://`}
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          title={t('dashboard.configs.copyFile')}
+                          onClick={() => {
+                            copyToClipboard(p.clientConfig).catch(() => {})
+                            setCopiedPeerId(p.id)
+                            setTimeout(() => setCopiedPeerId(null), 1500)
+                          }}
+                        >
+                          {copiedPeerId === p.id ? <Check size={13} /> : <Copy size={13} />}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          title={t('dashboard.configs.downloadConfig')}
+                          onClick={() => {
+                            const ext = liveConfig.protocol === 'openvpn' ? 'ovpn' : liveConfig.protocol === 'xray' ? 'json' : 'conf'
+                            const blob = new Blob([p.clientConfig], { type: 'text/plain' })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href = url
+                            const safeName = p.name.replace(/[^a-zA-Z0-9._-]+/g, '_') || 'peer'
+                            a.download = `${safeName}.${ext}`
+                            a.click()
+                            URL.revokeObjectURL(url)
+                          }}
+                        >
+                          <Download size={13} />
+                        </Button>
+                        {peerQr && (
+                          <Button size="sm" variant="ghost" onClick={() => setQrPeerId(qrPeerId === p.id ? null : p.id)}>
+                            QR
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={peerBusy}
+                          onClick={() => handleRevokePeer(p.id)}
+                          className="text-rose-400 hover:text-rose-300"
+                        >
+                          Отозвать
+                        </Button>
+                      </div>
+                    </div>
+                    {qrPeerId === p.id && peerQr && (
+                      <div className="pt-2 flex justify-center">
+                        <img src={qrCodeUrl(peerQr, 176)} alt="QR" width={176} height={176} className="rounded-xl bg-white p-2" />
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+        <>
         {bundle.shareLink && (
           <div className="mb-4 rounded-xl border border-accent-cyan/15 bg-accent-cyan/[0.04] p-3">
             <pre className="text-[11px] font-mono text-accent-cyan/90 overflow-x-auto whitespace-pre-wrap break-all max-h-24">
@@ -223,6 +417,8 @@ function ClientConfigModalContent({
             {t('dashboard.configs.downloadConfig')}
           </Button>
         </div>
+        </>
+        )}
       </div>
     </div>
   )

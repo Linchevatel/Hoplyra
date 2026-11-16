@@ -149,6 +149,7 @@ export const en: TranslationTree = {
     clear: 'Clear',
     details: 'Details →',
     config: 'Config',
+    clients: 'Clients',
     stop: 'Stop',
     enable: 'Enable',
     saved: 'Saved',

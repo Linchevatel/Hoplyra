@@ -1,4 +1,4 @@
-import { Download } from 'lucide-react'
+import { Download, Users } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import type { VpnConfig } from '@/lib/types'
 import { canShowClientConfig } from '@/lib/client-config'
@@ -17,10 +17,12 @@ export function ClientConfigButton({
 
   if (!canShowClientConfig(config)) return null
 
+  const isMultiPeer = (config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'xray' || config.protocol === 'openvpn') && !config.hops?.length
+
   return (
     <Button variant={compact ? 'ghost' : 'secondary'} size="sm" onClick={onClick}>
-      <Download size={14} />
-      {compact ? t('common.config') : t('dashboard.configs.clientConfig')}
+      {isMultiPeer ? <Users size={14} /> : <Download size={14} />}
+      {isMultiPeer ? t('common.clients') : (compact ? t('common.config') : t('dashboard.configs.clientConfig'))}
     </Button>
   )
 }

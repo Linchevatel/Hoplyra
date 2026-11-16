@@ -149,6 +149,7 @@ export const ru: TranslationTree = {
     clear: 'Очистить',
     details: 'Подробнее →',
     config: 'Конфиг',
+    clients: 'Клиенты',
     stop: 'Остановить',
     enable: 'Включить',
     saved: 'Сохранено',

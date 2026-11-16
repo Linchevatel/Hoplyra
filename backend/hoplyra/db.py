@@ -62,6 +62,18 @@ def init_db() -> None:
                 password_hash TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS config_peers (
+                id TEXT PRIMARY KEY,
+                config_id TEXT NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                preshared_key TEXT,
+                client_ip TEXT NOT NULL,
+                client_config TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
             """
         )
     with connect() as conn:
@@ -70,6 +82,12 @@ def init_db() -> None:
         for name, kind in (("deploy_owner", "TEXT"), ("lease_expires_at", "REAL")):
             if name not in columns:
                 conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {kind}")
+        srv_cols = {r["name"] for r in conn.execute("PRAGMA table_info(servers)")}
+        if "host_fingerprint" not in srv_cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN host_fingerprint TEXT")
+        auth_cols = {r["name"] for r in conn.execute("PRAGMA table_info(panel_auth)")}
+        if "session_version" not in auth_cols:
+            conn.execute("ALTER TABLE panel_auth ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
     migrate_auth_secrets()
     from hoplyra.panel_auth import ensure_default_admin
 
