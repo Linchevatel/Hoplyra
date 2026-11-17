@@ -56,9 +56,14 @@ from hoplyra.chains.planner import build_plan, validate_chain
 from hoplyra.chains.route_test import test_chain_route
 from hoplyra.chains.preflight import ChainPreflightError, recheck_runners_online, verify_chain_servers
 from hoplyra.protocols import DEPLOYERS, get_deployer_for_config
-from hoplyra.remote import RemoteRunner, ServerTarget, is_local_host, load_private_key, probe_server, test_ssh_auth
+from hoplyra.remote import RemoteRunner, ServerTarget, is_local_host, load_private_key, measure_tcp_latency, probe_server, test_ssh_auth
 from hoplyra.host_setup import ensure_host_ready
-from hoplyra.server_prepare import get_prepare_job, start_prepare_job
+from hoplyra.server_prepare import (
+    get_prepare_generation,
+    get_prepare_job,
+    get_server_lock,
+    start_prepare_job,
+)
 from hoplyra.server_metrics import CONTROL_SERVER_ID, collect_local_metrics, metrics_for_target
 from hoplyra.metrics_cache import metrics_cache
 from hoplyra.geo import ensure_location, lookup_location
@@ -380,28 +385,33 @@ def _apply_server_probe(row: Any, probe: dict[str, Any], *, runtime: str | None 
         )
 
 
-def _refresh_server_row(row: Any) -> None:
+def _refresh_server_row(row: Any, initial_gen: int = 0) -> None:
     target = _server_target(row)
     ssh_ok, _ssh_err = test_ssh_auth(target)
+    server_id = row["id"]
+
     if not ssh_ok:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE servers SET status='offline', last_seen=? WHERE id=?",
-                (db._now(), row["id"]),
-            )
+        with get_server_lock(server_id):
+            if get_prepare_generation(server_id) != initial_gen:
+                return
+            job = get_prepare_job(server_id)
+            if job and job.status == "running":
+                return
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE servers SET status='offline', last_seen=? WHERE id=?",
+                    (db._now(), server_id),
+                )
         return
 
     probe = probe_server(target)
-    runtime: str | None = None
-    try:
-        setup = ensure_host_ready(RemoteRunner(target))
-        runtime = setup.get("runtime")
-    except Exception:
-        pass
-    if runtime:
-        probe["status"] = "online"
-        probe["podmanVersion"] = runtime
-    _apply_server_probe(row, probe, runtime=runtime)
+    with get_server_lock(server_id):
+        if get_prepare_generation(server_id) != initial_gen:
+            return
+        job = get_prepare_job(server_id)
+        if job and job.status == "running":
+            return
+        _apply_server_probe(row, probe)
 
 
 def _recheck_offline_servers_loop() -> None:
@@ -409,20 +419,37 @@ def _recheck_offline_servers_loop() -> None:
     while True:
         try:
             with connect() as conn:
-                rows = [
-                    r
-                    for r in _remote_server_rows(conn)
-                    if r["status"] in ("offline", "error")
-                ]
+                rows = _remote_server_rows(conn)
             for row in rows:
+                server_id = row["id"]
+                with get_server_lock(server_id):
+                    job = get_prepare_job(server_id)
+                    if job and job.status == "running":
+                        continue
+                    initial_gen = get_prepare_generation(server_id)
                 try:
-                    _refresh_server_row(row)
+                    target = _server_target(row)
+                    latency = measure_tcp_latency(target.host, target.port, timeout=4.0)
+                    if latency is None:
+                        with get_server_lock(server_id):
+                            if get_prepare_generation(server_id) != initial_gen:
+                                continue
+                            job = get_prepare_job(server_id)
+                            if job and job.status == "running":
+                                continue
+                            with connect() as conn:
+                                conn.execute(
+                                    "UPDATE servers SET status=?, latency_ms=NULL, last_seen=? WHERE id=?",
+                                    ("offline", db._now(), server_id),
+                                )
+                    else:
+                        _refresh_server_row(row, initial_gen=initial_gen)
                 except Exception:
-                    log.debug("offline recheck failed for %s", row["host"], exc_info=True)
-                time.sleep(1.5)
+                    log.debug("periodic server recheck failed for %s", row["host"], exc_info=True)
+                time.sleep(1.0)
         except Exception:
-            log.debug("offline recheck loop failed", exc_info=True)
-        time.sleep(30)
+            log.debug("periodic server recheck loop failed", exc_info=True)
+        time.sleep(20)
 
 
 @app.on_event("startup")
@@ -735,25 +762,38 @@ def get_server_prepare_status(server_id: str) -> dict[str, Any]:
 
 @app.post("/api/servers/{server_id}/prepare")
 def prepare_server(server_id: str) -> dict[str, Any]:
+    from hoplyra.server_prepare import _clear_job_later, _set_job, bump_prepare_generation
+
     row = _get_server_row(server_id)
     target = _server_target(row)
     ssh_ok, ssh_err = test_ssh_auth(target)
     if not ssh_ok:
         raise HTTPException(400, ssh_err or "SSH недоступен")
+
+    with get_server_lock(server_id):
+        bump_prepare_generation(server_id)
+        _set_job(server_id, 10, "install", "Подготовка VPS…", "running")
     try:
         setup = ensure_host_ready(RemoteRunner(target), force=True)
+        probe = probe_server(target)
+        if setup.get("runtime"):
+            probe["status"] = "online"
+            probe["podmanVersion"] = setup["runtime"]
+        with get_server_lock(server_id):
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE servers SET status=?, last_seen=?, os=COALESCE(?, os) WHERE id=?",
+                    (probe["status"], probe.get("lastSeen"), probe.get("os"), server_id),
+                )
+                updated = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+            _set_job(server_id, 100, "done", "VPS готов к работе", "done")
+        _clear_job_later(server_id, delay_sec=15)
     except Exception as exc:
+        with get_server_lock(server_id):
+            _set_job(server_id, 100, "error", f"Ошибка: {str(exc)[:200]}", "error")
+        _clear_job_later(server_id, delay_sec=60)
         raise HTTPException(500, str(exc)) from exc
-    probe = probe_server(target)
-    if setup.get("runtime"):
-        probe["status"] = "online"
-        probe["podmanVersion"] = setup["runtime"]
-    with connect() as conn:
-        conn.execute(
-            "UPDATE servers SET status=?, last_seen=?, os=COALESCE(?, os) WHERE id=?",
-            (probe["status"], probe.get("lastSeen"), probe.get("os"), server_id),
-        )
-        updated = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+
     result = _server_response(updated)
     result["statusMessage"] = "VPS подготовлен"
     if setup.get("runtime"):

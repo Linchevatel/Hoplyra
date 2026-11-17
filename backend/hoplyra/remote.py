@@ -473,7 +473,7 @@ def probe_server(target: ServerTarget) -> dict:
             podman_version = get_runtime_info(runner)
         else:
             message = "Контейнерный runtime не установлен — будет установлен при деплое или ping"
-            status = "connecting"
+            status = "online"
 
     except OSError as exc:
         status = "offline"

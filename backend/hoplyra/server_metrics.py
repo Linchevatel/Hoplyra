@@ -344,8 +344,14 @@ def metrics_for_target(
         "error": None,
     }
 
-    if status == "connecting":
+    from hoplyra.server_prepare import get_prepare_job
+
+    job = get_prepare_job(server_id)
+    if job and job.status == "running":
         base["error"] = "VPS is still preparing"
+        return base
+    if fresh_latency is None:
+        base["error"] = "VPS is unreachable"
         return base
 
     base["online"] = True

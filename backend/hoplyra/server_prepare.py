@@ -37,6 +37,30 @@ class PrepareJob:
 
 _JOBS: dict[str, PrepareJob] = {}
 _LOCK = threading.Lock()
+_SERVER_LOCKS: dict[str, threading.Lock] = {}
+_SERVER_LOCKS_GUARD = threading.Lock()
+_PREPARE_GENERATIONS: dict[str, int] = {}
+
+
+def get_prepare_generation(server_id: str) -> int:
+    with _SERVER_LOCKS_GUARD:
+        return _PREPARE_GENERATIONS.get(server_id, 0)
+
+
+def bump_prepare_generation(server_id: str) -> int:
+    with _SERVER_LOCKS_GUARD:
+        gen = _PREPARE_GENERATIONS.get(server_id, 0) + 1
+        _PREPARE_GENERATIONS[server_id] = gen
+        return gen
+
+
+def get_server_lock(server_id: str) -> threading.Lock:
+    with _SERVER_LOCKS_GUARD:
+        lock = _SERVER_LOCKS.get(server_id)
+        if lock is None:
+            lock = threading.Lock()
+            _SERVER_LOCKS[server_id] = lock
+        return lock
 
 
 def get_prepare_job(server_id: str) -> PrepareJob | None:
@@ -69,7 +93,9 @@ def start_prepare_job(
     tags: list[str],
     notes: str | None,
 ) -> None:
-    _set_job(server_id, 8, "ssh", "SSH подключён, проверка сервера…")
+    with get_server_lock(server_id):
+        bump_prepare_generation(server_id)
+        _set_job(server_id, 8, "ssh", "SSH подключён, проверка сервера…")
 
     def worker() -> None:
         try:
@@ -82,8 +108,7 @@ def start_prepare_job(
             setup = ensure_host_ready(runner, on_progress=on_progress)
             _set_job(server_id, 92, "verify", "Проверка Podman и сети…")
             probe = probe_server(target)
-            if probe["status"] == "connecting" and setup.get("runtime"):
-                probe["status"] = "online"
+            if setup.get("runtime"):
                 probe["podmanVersion"] = setup.get("runtime")
 
             status_message: str | None = None
@@ -92,32 +117,34 @@ def start_prepare_job(
             elif probe.get("message"):
                 status_message = probe["message"]
 
-            with connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE servers SET status=?, os=?, latency_ms=?, last_seen=? WHERE id=?
-                    """,
-                    (
-                        probe["status"],
-                        probe.get("os"),
-                        probe.get("latencyMs"),
-                        probe.get("lastSeen") or db._now(),
-                        server_id,
-                    ),
-                )
+            with get_server_lock(server_id):
+                with connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE servers SET status=?, os=?, latency_ms=?, last_seen=? WHERE id=?
+                        """,
+                        (
+                            probe["status"],
+                            probe.get("os"),
+                            probe.get("latencyMs"),
+                            probe.get("lastSeen") or db._now(),
+                            server_id,
+                        ),
+                    )
 
-            _set_job(server_id, 100, "done", "VPS готов к работе", "done")
+                _set_job(server_id, 100, "done", "VPS готов к работе", "done")
             log.info("Prepare done for %s (%s)", name, target.host)
             _clear_job_later(server_id)
         except Exception as exc:
             err = str(exc)[:500]
             log.exception("Prepare failed for %s: %s", target.host, err)
             _set_job(server_id, 100, "error", err, "error")
-            with connect() as conn:
-                conn.execute(
-                    "UPDATE servers SET status='error' WHERE id=?",
-                    (server_id,),
-                )
+            with get_server_lock(server_id):
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE servers SET status='error' WHERE id=?",
+                        (server_id,),
+                    )
             _clear_job_later(server_id)
 
     threading.Thread(target=worker, daemon=True).start()
