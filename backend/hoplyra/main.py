@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from hoplyra.health_check import health_loop, refresh_config
+from hoplyra.routing_zones import get_bypass_ru_allowed_ips, start_weekly_zone_updater
 from hoplyra import db
 from hoplyra.auth import (
     SessionAuthMiddleware,
@@ -519,6 +520,7 @@ def startup() -> None:
     metrics_cache.start(_load_remote_server_rows)
     threading.Thread(target=metrics_cache.refresh, daemon=True, name="hoplyra-metrics-initial").start()
     threading.Thread(target=_backfill_locations, daemon=True, name="hoplyra-geo-backfill").start()
+    start_weekly_zone_updater(DATA_DIR)
     threading.Thread(
         target=_recheck_offline_servers_loop,
         daemon=True,
@@ -1720,11 +1722,40 @@ class PeerCreateRequest(BaseModel):
 
 
 @app.get("/api/configs/{config_id}/peers")
-def get_config_peers(config_id: str) -> list[dict[str, Any]]:
+def get_config_peers(config_id: str, mode: str | None = None) -> list[dict[str, Any]]:
     from hoplyra.peers import list_peers
 
-    _get_config_and_server(config_id)
-    return list_peers(config_id)
+    cfg, _ = _get_config_and_server(config_id)
+    peers = list_peers(config_id)
+    if mode == "bypass-ru" and cfg["protocol"] in ("awg", "wg"):
+        import ipaddress
+        import re
+        from hoplyra.peers import _build_peer_amnezia_uri
+
+        allowed_ips = get_bypass_ru_allowed_ips(DATA_DIR)
+        for p in peers:
+            if p.get("clientConfig"):
+                conf_text = p["clientConfig"]
+                m = re.search(r"^AllowedIPs\s*=\s*(.*)$", conf_text, re.MULTILINE)
+                v6_entries = []
+                if m:
+                    for entry in [e.strip() for e in m.group(1).split(",") if e.strip()]:
+                        try:
+                            if ipaddress.ip_network(entry, strict=False).version == 6:
+                                v6_entries.append(entry)
+                        except ValueError:
+                            if ":" in entry:
+                                v6_entries.append(entry)
+                combined_allowed = f"AllowedIPs = {allowed_ips}" + (f", {', '.join(v6_entries)}" if v6_entries else "")
+                p["clientConfig"] = re.sub(
+                    r"^AllowedIPs\s*=.*$",
+                    combined_allowed,
+                    conf_text,
+                    flags=re.MULTILINE,
+                )
+                if cfg["protocol"] == "awg":
+                    p["amneziaVpnUri"] = _build_peer_amnezia_uri(dict(cfg), p["name"], p["clientConfig"])
+    return peers
 
 
 @app.post("/api/configs/{config_id}/peers")
@@ -1769,7 +1800,7 @@ def config_live(config_id: str) -> dict[str, str]:
 
 
 @app.get("/api/configs/{config_id}/client-config")
-def get_client_config(config_id: str) -> dict[str, str]:
+def get_client_config(config_id: str, mode: str | None = None) -> dict[str, str]:
     cfg, row = _get_config_and_server(config_id)
     client_config = cfg["client_config"]
 
@@ -1785,7 +1816,38 @@ def get_client_config(config_id: str) -> dict[str, str]:
 
     if not client_config:
         raise HTTPException(404, "Client config not ready yet")
-    return {"protocol": cfg["protocol"], "config": client_config}
+
+    amnezia_uri: str | None = None
+    if mode == "bypass-ru" and cfg["protocol"] in ("awg", "wg"):
+        import ipaddress
+        import re
+        from hoplyra.peers import _build_peer_amnezia_uri
+
+        allowed_ips = get_bypass_ru_allowed_ips(DATA_DIR)
+        m = re.search(r"^AllowedIPs\s*=\s*(.*)$", client_config, re.MULTILINE)
+        v6_entries = []
+        if m:
+            for entry in [e.strip() for e in m.group(1).split(",") if e.strip()]:
+                try:
+                    if ipaddress.ip_network(entry, strict=False).version == 6:
+                        v6_entries.append(entry)
+                except ValueError:
+                    if ":" in entry:
+                        v6_entries.append(entry)
+        combined_allowed = f"AllowedIPs = {allowed_ips}" + (f", {', '.join(v6_entries)}" if v6_entries else "")
+        client_config = re.sub(
+            r"^AllowedIPs\s*=.*$",
+            combined_allowed,
+            client_config,
+            flags=re.MULTILINE,
+        )
+        if cfg["protocol"] == "awg":
+            amnezia_uri = _build_peer_amnezia_uri(dict(cfg), f"Hoplyra-{config_id[:8]}", client_config)
+
+    res: dict[str, Any] = {"protocol": cfg["protocol"], "config": client_config}
+    if amnezia_uri:
+        res["amneziaVpnUri"] = amnezia_uri
+    return res
 
 
 def _frontend_dist() -> Path | None:

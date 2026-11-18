@@ -400,8 +400,9 @@ export function deleteConfigApi(id: string): Promise<void> {
   return request<void>(`/api/configs/${id}`, { method: 'DELETE' })
 }
 
-export function fetchClientConfig(id: string): Promise<{ protocol: string; config: string }> {
-  return request(`/api/configs/${id}/client-config`)
+export function fetchClientConfig(id: string, mode?: 'all' | 'bypass-ru'): Promise<{ protocol: string; config: string; amneziaVpnUri?: string | null }> {
+  const query = mode && mode !== 'all' ? `?mode=${encodeURIComponent(mode)}` : ''
+  return request(`/api/configs/${id}/client-config${query}`)
 }
 
 export function generateAwg(version: string, profile: string) {
@@ -420,8 +421,9 @@ export interface ConfigPeer {
   createdAt: string
 }
 
-export function fetchConfigPeers(configId: string): Promise<ConfigPeer[]> {
-  return request<ConfigPeer[]>(`/api/configs/${configId}/peers`)
+export function fetchConfigPeers(configId: string, mode?: 'all' | 'bypass-ru'): Promise<ConfigPeer[]> {
+  const query = mode && mode !== 'all' ? `?mode=${encodeURIComponent(mode)}` : ''
+  return request<ConfigPeer[]>(`/api/configs/${configId}/peers${query}`)
 }
 
 export function createConfigPeer(configId: string, name: string): Promise<ConfigPeer> {

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button'
 import type { VpnConfig, VpsServer } from '@/lib/types'
 import { buildClientConfigBundle, extractVlessUri } from '@/lib/client-config'
 import { QrImage } from '@/components/ui/QrImage'
-import { copyToClipboard } from '@/lib/utils'
+import { cn, copyToClipboard } from '@/lib/utils'
 import { PROTOCOLS } from '@/lib/constants'
 import { configUsesAwg } from '@/lib/deploy-history'
 import { useI18n } from '@/i18n/i18n-context'
@@ -31,12 +31,7 @@ function ClientConfigModalContent({
   onConfigUpdated,
 }: ClientConfigModalProps) {
   const { t } = useI18n()
-  const [sourceConfig, setSourceConfig] = useState(config)
   const [liveConfig, setLiveConfig] = useState(config)
-  if (sourceConfig !== config) {
-    setSourceConfig(config)
-    setLiveConfig(config)
-  }
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
@@ -47,6 +42,7 @@ function ClientConfigModalContent({
   const [peerError, setPeerError] = useState<string | null>(null)
   const [copiedPeerId, setCopiedPeerId] = useState<string | null>(null)
   const [copiedPeerLinkId, setCopiedPeerLinkId] = useState<string | null>(null)
+  const [routingMode, setRoutingMode] = useState<'all' | 'bypass-ru'>('all')
   const [qrPeerId, setQrPeerId] = useState<string | null>(null)
   const supportsPeers =
     (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn') &&
@@ -54,14 +50,27 @@ function ClientConfigModalContent({
     liveConfig.status === 'active' &&
     !liveConfig.id.startsWith('demo-')
 
+    const [loadPeersError, setLoadPeersError] = useState<string | null>(null)
+  const [peersRevision, setPeersRevision] = useState(0)
+
   useEffect(() => {
     if (!supportsPeers) return
     let active = true
-    api.fetchConfigPeers(liveConfig.id)
-      .then((list) => { if (active) setPeers(list) })
-      .catch(() => {})
+        setLoadPeersError(null)
+    api.fetchConfigPeers(liveConfig.id, routingMode)
+      .then((list) => {
+        if (active) {
+          setPeers(list)
+                  }
+      })
+      .catch((err) => {
+        if (active) {
+          setPeers([])
+          setLoadPeersError(err instanceof Error ? err.message : t('common.error'))
+                  }
+      })
     return () => { active = false }
-  }, [liveConfig.id, supportsPeers])
+  }, [liveConfig.id, supportsPeers, routingMode, peersRevision, t])
 
   async function handleAddPeer() {
     const trimmed = peerName.trim()
@@ -69,9 +78,10 @@ function ClientConfigModalContent({
     setPeerBusy(true)
     setPeerError(null)
     try {
-      const created = await api.createConfigPeer(liveConfig.id, trimmed)
-      setPeers((prev) => [...prev, created])
+      await api.createConfigPeer(liveConfig.id, trimmed)
       setPeerName('')
+      // Перечитываем актуальный список пиров с учетом текущего routingMode
+      setPeersRevision((n) => n + 1)
     } catch (err) {
       setPeerError(err instanceof Error ? err.message : t('common.error'))
     } finally {
@@ -93,6 +103,8 @@ function ClientConfigModalContent({
     }
   }
 
+  const supportsRoutingSplit = (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg') && !liveConfig.hops?.length
+
   const [repairing, setRepairing] = useState(false)
   const [loadingConfig, setLoadingConfig] = useState(() =>
     !config.id.startsWith('demo-') && !config.id.startsWith('pending'),
@@ -107,9 +119,10 @@ function ClientConfigModalContent({
       return
     }
     let cancelled = false
+    setLoadingConfig(true)
     api
-      .fetchClientConfig(liveConfig.id)
-      .then(({ config: clientConfig }) => {
+      .fetchClientConfig(liveConfig.id, routingMode)
+      .then(({ config: clientConfig, amneziaVpnUri }) => {
         if (cancelled) return
         if (!clientConfig.trim()) throw new Error(t('common.error'))
         setLoaded(true)
@@ -117,6 +130,7 @@ function ClientConfigModalContent({
         setLiveConfig((prev) => ({
           ...prev,
           clientConfig,
+          amneziaVpnUri: amneziaVpnUri ?? (routingMode === 'all' ? config.amneziaVpnUri : undefined),
           ...(vlessUri ? { vlessUri } : {}),
         }))
       })
@@ -129,7 +143,7 @@ function ClientConfigModalContent({
     return () => {
       cancelled = true
     }
-  }, [liveConfig.id, retry, t])
+  }, [liveConfig.id, retry, routingMode, t])
   const exportReady = loaded && !loadingConfig && !loadError && !!liveConfig.clientConfig?.trim()
   const needsAmneziaRepair =
     !liveConfig.hops?.length &&
@@ -228,7 +242,40 @@ function ClientConfigModalContent({
           </button>
         </div>
 
-        {!supportsPeers && bundle.supportsQr && (
+        {supportsRoutingSplit && (
+          <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+            <span className="text-[11px] font-medium text-zinc-300">
+              {t('dashboard.configs.routingMode')}
+            </span>
+            <div className="inline-flex flex-wrap rounded-lg border border-white/10 p-0.5 gap-0.5 w-full">
+              {([
+                { id: 'all', label: t('dashboard.configs.routeAll') },
+                { id: 'bypass-ru', label: t('dashboard.configs.routeBypassRu') },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setRoutingMode(opt.id)}
+                  className={cn(
+                    'flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer text-center',
+                    routingMode === opt.id
+                      ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5',
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {routingMode === 'bypass-ru' && (
+              <p className="text-[11px] text-amber-300/80 leading-relaxed">
+                {t('dashboard.configs.routeBypassRuHint')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {!supportsPeers && bundle.supportsQr && routingMode !== 'bypass-ru' && (
           <div className="flex flex-col items-center mb-4">
             <QrImage data={bundle.qrPayload} size={200} />
             <p className="text-[10px] text-text-muted mt-2 text-center">
@@ -255,6 +302,14 @@ function ClientConfigModalContent({
               </Button>
             </div>
             {peerError && <p className="text-xs text-rose-400">{peerError}</p>}
+            {loadPeersError && (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-2.5 text-xs text-rose-300 flex items-center justify-between gap-2">
+                <span>{loadPeersError}</span>
+                <Button size="sm" variant="ghost" onClick={() => setPeersRevision((n) => n + 1)}>
+                  {t("ui.retry")}
+                </Button>
+              </div>
+            )}
 
             <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
               {/* Primary client */}
@@ -265,7 +320,7 @@ function ClientConfigModalContent({
                     <span className="px-1.5 py-0.5 rounded bg-accent-cyan/15 text-accent-cyan text-[10px] font-medium">Primary</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {bundle.shareLink && (
+                    {bundle.shareLink && routingMode !== 'bypass-ru' && (
                       <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleCopyLink} title={bundle.shareLink.scheme + '://'}>
                         {copiedLink ? <Check size={13} /> : `${bundle.shareLink.scheme}://`}
                       </Button>
@@ -276,14 +331,14 @@ function ClientConfigModalContent({
                     <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleDownload} title="Скачать .conf">
                       <Download size={13} />
                     </Button>
-                    {bundle.qrPayload && (
+                    {bundle.qrPayload && routingMode !== 'bypass-ru' && (
                       <Button size="sm" variant="ghost" onClick={() => setQrPeerId(qrPeerId === 'primary' ? null : 'primary')}>
                         QR
                       </Button>
                     )}
                   </div>
                 </div>
-                {qrPeerId === 'primary' && bundle.qrPayload && (
+                {qrPeerId === 'primary' && bundle.qrPayload && routingMode !== 'bypass-ru' && (
                   <div className="pt-2 flex justify-center">
                     <QrImage data={bundle.qrPayload} size={176} />
                   </div>
@@ -309,7 +364,7 @@ function ClientConfigModalContent({
                         <p className="text-[11px] text-text-muted font-mono">{peerAddr}</p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {peerShareUri && (
+                        {peerShareUri && routingMode !== 'bypass-ru' && (
                           <Button
                             size="sm"
                             variant="secondary"
@@ -353,7 +408,7 @@ function ClientConfigModalContent({
                         >
                           <Download size={13} />
                         </Button>
-                        {peerQr && (
+                        {peerQr && routingMode !== 'bypass-ru' && (
                           <Button size="sm" variant="ghost" onClick={() => setQrPeerId(qrPeerId === p.id ? null : p.id)}>
                             QR
                           </Button>
@@ -369,7 +424,7 @@ function ClientConfigModalContent({
                         </Button>
                       </div>
                     </div>
-                    {qrPeerId === p.id && peerQr && (
+                    {qrPeerId === p.id && peerQr && routingMode !== 'bypass-ru' && (
                       <div className="pt-2 flex justify-center">
                         <QrImage data={peerQr} size={176} />
                       </div>
@@ -381,7 +436,7 @@ function ClientConfigModalContent({
           </div>
         ) : (
         <>
-        {bundle.shareLink && (
+        {bundle.shareLink && routingMode !== 'bypass-ru' && (
           <div className="mb-4 rounded-xl border border-accent-cyan/15 bg-accent-cyan/[0.04] p-3">
             <pre className="text-[11px] font-mono text-accent-cyan/90 overflow-x-auto whitespace-pre-wrap break-all max-h-24">
               {bundle.shareLink.uri}

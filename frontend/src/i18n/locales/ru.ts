@@ -518,6 +518,11 @@ export const ru: TranslationTree = {
       emptyCategory: 'В этой категории конфигов нет',
       buildChain: 'Собрать цепь',
       clientConfig: 'Конфиг клиента',
+      routingMode: 'Маршрутизация трафика:',
+      routeAll: 'Весь трафик (0.0.0.0/0)',
+      routeBypassRu: 'В обход РФ (Bypass RU)',
+      routeBypassRuHint: 'Предназначено для ПК и домашних роутеров (Keenetic, OpenWrt). На мобильных устройствах из-за 21 000+ правил профиль может не импортироваться или замедлить клиент. Для смартфонов: на Android используйте «Исключения приложений» в настройках AmneziaVPN; на iOS — обычный профиль и список исключений по адресам.',
+      qrOversizedWarning: 'В режиме «В обход РФ» QR-код и ссылки отключены (конфиг оптимизирован для ПК и роутеров). Используйте скачивание файла .conf или копирование текста.',
       xrayBypassHint:
         'VLESS + REALITY: SNI yandex.net, fp=qq. Импорт JSON в Hiddify/v2rayNG (как в рабочих RU-конфигах).',
       repairXrayBypass: 'Обновить anti-DPI (РФ)',

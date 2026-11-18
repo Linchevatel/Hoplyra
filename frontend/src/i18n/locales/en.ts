@@ -515,6 +515,11 @@ export const en: TranslationTree = {
       emptyCategory: 'No configs in this category',
       buildChain: 'Build a chain',
       clientConfig: 'Client config',
+      routingMode: 'Traffic Routing:',
+      routeAll: 'All Traffic (0.0.0.0/0)',
+      routeBypassRu: 'Bypass Russia (Bypass RU)',
+      routeBypassRuHint: 'Designed for PCs and home routers (Keenetic, OpenWrt). On mobile devices with 21,000+ rules, the profile may fail to import or degrade performance. For smartphones: on Android use App Exclusions in AmneziaVPN settings; on iOS use the standard profile with custom IPv4 exclusions.',
+      qrOversizedWarning: 'QR codes and quick links are disabled in Bypass RU mode (optimized for PC and routers). Download the .conf file or copy the configuration text directly.',
       xrayBypassHint:
         'VLESS + REALITY for RU: SNI yandex.net, fp=qq. Prefer full JSON import in Hiddify / v2rayNG.',
       repairXrayBypass: 'Refresh anti-DPI (RU)',
