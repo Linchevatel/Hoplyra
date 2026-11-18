@@ -27,6 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         authRequired: me.authRequired,
         username: me.username ?? null,
         defaultPassword: me.defaultPassword ?? false,
+        twoFactorEnabled: me.twoFactorEnabled ?? false,
       })
     } catch {
       setState({
@@ -35,6 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         authRequired: true,
         username: null,
         defaultPassword: false,
+        twoFactorEnabled: false,
       })
     }
   }, [])
@@ -43,12 +45,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     void fetchAuthMe().then((me) => {
       if (cancelled) return
-      setState({ loading: false, authenticated: me.authenticated, authRequired: me.authRequired,
-        username: me.username ?? null, defaultPassword: me.defaultPassword ?? false })
+      setState({
+        loading: false,
+        authenticated: me.authenticated,
+        authRequired: me.authRequired,
+        username: me.username ?? null,
+        defaultPassword: me.defaultPassword ?? false,
+        twoFactorEnabled: me.twoFactorEnabled ?? false,
+      })
     }).catch(() => {
       if (cancelled) return
-      setState({ loading: false, authenticated: false, authRequired: true,
-        username: null, defaultPassword: false })
+      setState({
+        loading: false,
+        authenticated: false,
+        authRequired: true,
+        username: null,
+        defaultPassword: false,
+        twoFactorEnabled: false,
+      })
     })
     return () => { cancelled = true }
   }, [])
@@ -65,15 +79,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null)
   }, [])
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await loginApi(username, password)
+  const login = useCallback(async (username: string, password: string, code?: string) => {
+    const result = await loginApi(username, password, code)
+    if (result.twoFactorRequired) {
+      return { twoFactorRequired: true }
+    }
     setState({
       loading: false,
       authenticated: true,
       authRequired: true,
-      username: result.username,
+      username: result.username ?? username,
       defaultPassword: result.defaultPassword ?? false,
+      twoFactorEnabled: result.twoFactorEnabled ?? false,
     })
+    return { twoFactorRequired: false }
   }, [])
 
   const logout = useCallback(async () => {

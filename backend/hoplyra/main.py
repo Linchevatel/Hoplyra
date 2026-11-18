@@ -124,6 +124,49 @@ SINGLE_PROTOCOLS = frozenset(DEPLOYERS) | {"openvpn"}
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+    code: str | None = Field(default=None, max_length=16)
+
+
+class TwoFactorSetupResponse(BaseModel):
+    secret: str
+    otpauthUri: str
+
+
+class TwoFactorEnableRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class TwoFactorDisableRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=6, max_length=16)
+
+
+_FAILED_TOTP_ATTEMPTS: dict[str, list[float]] = {}
+_TOTP_RATE_LOCK = threading.Lock()
+_MAX_TOTP_ATTEMPTS = 5
+_TOTP_LOCKOUT_SECONDS = 300.0
+
+
+def _reserve_totp_attempt(username: str) -> None:
+    """Atomically consume an attempt ticket before verifying TOTP code."""
+    now = time.time()
+    with _TOTP_RATE_LOCK:
+        attempts = [t for t in _FAILED_TOTP_ATTEMPTS.get(username, []) if now - t < _TOTP_LOCKOUT_SECONDS]
+        _FAILED_TOTP_ATTEMPTS[username] = attempts
+        if len(attempts) >= _MAX_TOTP_ATTEMPTS:
+            remaining = int(_TOTP_LOCKOUT_SECONDS - (now - attempts[0]))
+            raise HTTPException(
+                429,
+                f"Слишком много неверных попыток ввода 2FA. Попробуйте снова через {max(1, remaining)} сек.",
+            )
+        # Атомарно бронируем слот попытки сразу
+        attempts.append(now)
+        _FAILED_TOTP_ATTEMPTS[username] = attempts
+
+
+def _clear_failed_totp(username: str) -> None:
+    with _TOTP_RATE_LOCK:
+        _FAILED_TOTP_ATTEMPTS.pop(username, None)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -498,30 +541,160 @@ def health() -> dict[str, str]:
 def auth_me(request: Request) -> dict[str, Any]:
     from hoplyra.auth import is_authenticated
 
+    from hoplyra.panel_auth import is_totp_enabled
+
     if is_authenticated(request):
+        user = request.session.get("user") or admin_username()
         return {
             "authenticated": True,
-            "username": request.session.get("user") or admin_username(),
+            "username": user,
             "authRequired": True,
             "defaultPassword": is_default_password(),
+            "twoFactorEnabled": is_totp_enabled(user),
         }
-    return {"authenticated": False, "authRequired": True, "defaultPassword": is_default_password()}
+    return {
+        "authenticated": False,
+        "authRequired": True,
+        "defaultPassword": is_default_password(),
+        "twoFactorEnabled": is_totp_enabled(),
+    }
 
 
 @app.post("/api/auth/login")
 def auth_login(body: LoginRequest, request: Request) -> dict[str, Any]:
-    if not verify_admin_credentials(body.username, body.password):
+    from hoplyra.panel_auth import get_auth_snapshot, record_used_totp_step, verify_password
+    from hoplyra.totp import verify_totp
+
+    clean_user = body.username.strip()
+    snapshot = get_auth_snapshot(clean_user)
+    if not snapshot:
         raise HTTPException(401, "invalid_credentials")
-    from hoplyra.panel_auth import get_session_version
+
+    expected_user, password_hash, snap_sv, totp_enabled, totp_secret, last_step = snapshot
+
+    import secrets as pysecrets
+
+    if not (pysecrets.compare_digest(clean_user, expected_user) and verify_password(body.password, password_hash)):
+        raise HTTPException(401, "invalid_credentials")
+
+    if totp_enabled:
+        if not body.code:
+            return {"twoFactorRequired": True}
+        _reserve_totp_attempt(clean_user)
+        if not totp_secret:
+            raise HTTPException(401, "invalid_totp_code")
+        valid, matched_step = verify_totp(totp_secret, body.code, min_step=last_step)
+        if not valid or matched_step is None:
+            raise HTTPException(401, "invalid_totp_code")
+        # Атомарно помечаем шаг как использованный, защищая от повтора и параллельных replay-запросов,
+        # связывая его строго с session_version снимка
+        if not record_used_totp_step(clean_user, matched_step, expected_sv=snap_sv):
+            raise HTTPException(401, "invalid_totp_code")
+        _clear_failed_totp(clean_user)
 
     request.session["authenticated"] = True
-    request.session["user"] = body.username.strip()
-    request.session["sv"] = get_session_version(request.session["user"])
+    request.session["user"] = clean_user
+    # Выдаём сессию строго с session_version из атомарного снимка,
+    # на котором проверялось состояние totp_enabled.
+    request.session["sv"] = snap_sv
     return {
         "ok": True,
-        "username": request.session["user"],
+        "username": clean_user,
         "defaultPassword": is_default_password(),
+        "twoFactorEnabled": totp_enabled,
     }
+
+
+@app.post("/api/auth/2fa/setup")
+def auth_2fa_setup(request: Request) -> TwoFactorSetupResponse:
+    from hoplyra.auth import is_authenticated
+    from hoplyra.panel_auth import is_totp_enabled, set_totp_secret_if_disabled
+    from hoplyra.totp import build_otpauth_uri, generate_totp_secret
+
+    if not is_authenticated(request):
+        raise HTTPException(401, "Unauthorized")
+    user = str(request.session.get("user") or "admin")
+    secret = generate_totp_secret()
+    if not set_totp_secret_if_disabled(user, secret):
+        raise HTTPException(400, "2FA уже включена. Сначала отключите её для перенастройки.")
+    otp_uri = build_otpauth_uri(secret, username=user)
+    return TwoFactorSetupResponse(secret=secret, otpauthUri=otp_uri)
+
+
+@app.post("/api/auth/2fa/enable")
+def auth_2fa_enable(body: TwoFactorEnableRequest, request: Request) -> dict[str, bool]:
+    from hoplyra.auth import is_authenticated
+    from hoplyra.panel_auth import enable_totp_conditional, get_totp_secret, is_totp_enabled
+    from hoplyra.totp import verify_totp
+
+    if not is_authenticated(request):
+        raise HTTPException(401, "Unauthorized")
+    user = str(request.session.get("user") or "admin")
+    if is_totp_enabled(user):
+        raise HTTPException(400, "2FA уже активирована")
+    secret = get_totp_secret(user)
+    if not secret:
+        raise HTTPException(400, "Сначала запросите настройку 2FA")
+    valid, matched_step = verify_totp(secret, body.code)
+    if not valid or matched_step is None:
+        raise HTTPException(400, "Неверный код подтверждения")
+    current_sv = int(request.session.get("sv") or 1)
+    ok, new_sv = enable_totp_conditional(
+        user,
+        expected_secret=secret,
+        expected_sv=current_sv,
+        confirmed_step=matched_step,
+    )
+    if not ok or new_sv is None:
+        raise HTTPException(400, "Секрет 2FA изменился, сессия устарела или 2FA уже активирована. Повторите настройку.")
+    # Присваиваем ровно ту версию, которую создала наша транзакция
+    request.session["sv"] = new_sv
+    return {"ok": True}
+
+
+@app.post("/api/auth/2fa/disable")
+def auth_2fa_disable(body: TwoFactorDisableRequest, request: Request) -> dict[str, bool]:
+    from hoplyra.auth import is_authenticated
+    from hoplyra.panel_auth import disable_totp_conditional, get_auth_snapshot, verify_password
+    from hoplyra.totp import verify_totp
+
+    if not is_authenticated(request):
+        raise HTTPException(401, "Unauthorized")
+    user = str(request.session.get("user") or "admin")
+    current_sv = int(request.session.get("sv") or 1)
+
+    _reserve_totp_attempt(user)
+
+    # Атомарно вычитываем состояние и последний шаг под блокировкой
+    snapshot = get_auth_snapshot(user)
+    if not snapshot:
+        raise HTTPException(401, "invalid_credentials")
+    expected_user, password_hash, snap_sv, totp_enabled, totp_secret, last_step = snapshot
+
+    if not totp_enabled or not totp_secret:
+        raise HTTPException(400, "2FA не была включена")
+    if snap_sv != current_sv:
+        raise HTTPException(401, "Сессия устарела. Войдите заново.")
+
+    import secrets as pysecrets
+    if not (pysecrets.compare_digest(user, expected_user) and verify_password(body.password, password_hash)):
+        raise HTTPException(400, "Неверный пароль")
+
+    valid, matched_step = verify_totp(totp_secret, body.code, min_step=last_step)
+    if not valid or matched_step is None:
+        raise HTTPException(400, "Неверный код 2FA")
+
+    _clear_failed_totp(user)
+    ok, new_sv = disable_totp_conditional(
+        user,
+        expected_secret=totp_secret,
+        expected_sv=current_sv,
+        consumed_step=matched_step,
+    )
+    if not ok or new_sv is None:
+        raise HTTPException(400, "2FA уже отключена, секрет изменился или сессия устарела")
+    request.session["sv"] = new_sv
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")

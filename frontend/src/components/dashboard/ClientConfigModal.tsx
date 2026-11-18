@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { X, Download, Copy, Check, GitBranch, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import type { VpnConfig, VpsServer } from '@/lib/types'
-import { buildClientConfigBundle, extractVlessUri, qrCodeUrl } from '@/lib/client-config'
+import { buildClientConfigBundle, extractVlessUri } from '@/lib/client-config'
+import { QrImage } from '@/components/ui/QrImage'
 import { copyToClipboard } from '@/lib/utils'
 import { PROTOCOLS } from '@/lib/constants'
 import { configUsesAwg } from '@/lib/deploy-history'
@@ -229,13 +230,7 @@ function ClientConfigModalContent({
 
         {!supportsPeers && bundle.supportsQr && (
           <div className="flex flex-col items-center mb-4">
-            <img
-              src={qrCodeUrl(bundle.qrPayload, 200)}
-              alt={t('dashboard.configs.qrConfig')}
-              className="rounded-xl border border-white/10 bg-white p-2"
-              width={200}
-              height={200}
-            />
+            <QrImage data={bundle.qrPayload} size={200} />
             <p className="text-[10px] text-text-muted mt-2 text-center">
               {bundle.shareLink
                 ? t('dashboard.configs.qrScheme', { scheme: bundle.shareLink.scheme })
@@ -290,7 +285,7 @@ function ClientConfigModalContent({
                 </div>
                 {qrPeerId === 'primary' && bundle.qrPayload && (
                   <div className="pt-2 flex justify-center">
-                    <img src={qrCodeUrl(bundle.qrPayload, 176)} alt="QR" width={176} height={176} className="rounded-xl bg-white p-2" />
+                    <QrImage data={bundle.qrPayload} size={176} />
                   </div>
                 )}
               </div>
@@ -376,7 +371,7 @@ function ClientConfigModalContent({
                     </div>
                     {qrPeerId === p.id && peerQr && (
                       <div className="pt-2 flex justify-center">
-                        <img src={qrCodeUrl(peerQr, 176)} alt="QR" width={176} height={176} className="rounded-xl bg-white p-2" />
+                        <QrImage data={peerQr} size={176} />
                       </div>
                     )}
                   </div>

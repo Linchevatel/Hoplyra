@@ -203,10 +203,6 @@ export function buildClientConfigBundle(
   return bundle
 }
 
-export function qrCodeUrl(data: string, size = 180): string {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}`
-}
-
 export function supportsQr(protocol: Protocol): boolean {
   return (
     protocol === 'wg' ||

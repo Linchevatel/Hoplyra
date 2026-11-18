@@ -24,7 +24,7 @@ const dashboard = {
   saveUserChainTemplate: noop, removeUserChainTemplate: noop, markNotificationRead: noop,
   markAllNotificationsRead: noop, dismissNotification: noop, clearAllNotifications: noop,
 }
-const auth = { username: 'test', defaultPassword: false, authenticated: true, authRequired: true, loading: false, login: async () => {}, logout: async () => {}, refresh: async () => {} }
+const auth = { username: 'test', defaultPassword: false, authenticated: true, authRequired: true, loading: false, twoFactorEnabled: false, login: async () => ({ twoFactorRequired: false }), logout: async () => {}, refresh: async () => {} }
 
 const servers: VpsServer[] = [
   { id: 'us', name: 'US Server', host: '192.0.2.10', port: 22, username: 'test', location: 'US, New York', status: 'online', latencyMs: 193 },

@@ -5,10 +5,11 @@ export type AuthState = {
   authRequired: boolean
   username: string | null
   defaultPassword: boolean
+  twoFactorEnabled?: boolean
 }
 
 type AuthContextValue = AuthState & {
-  login: (username: string, password: string) => Promise<void>
+  login: (username: string, password: string, code?: string) => Promise<{ twoFactorRequired?: boolean }>
   logout: () => Promise<void>
   refresh: () => Promise<void>
 }

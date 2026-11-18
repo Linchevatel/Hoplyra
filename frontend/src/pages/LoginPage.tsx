@@ -5,6 +5,7 @@ import { LogIn } from 'lucide-react'
 import logoCandidate from '@/assets/logo/candidate-tl.png'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { ApiError } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/i18n/i18n-context'
 
@@ -13,6 +14,8 @@ export function LoginPage() {
   const { loading, authenticated, defaultPassword, login } = useAuth()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
+  const [totpCode, setTotpCode] = useState('')
+  const [twoFactorNeeded, setTwoFactorNeeded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -25,9 +28,24 @@ export function LoginPage() {
     setError(null)
     setSubmitting(true)
     try {
-      await login(username.trim(), password)
-    } catch {
-      setError(t('auth.loginFailed'))
+      const res = await login(username.trim(), password, twoFactorNeeded ? totpCode.trim() : undefined)
+      if (res.twoFactorRequired) {
+        setTwoFactorNeeded(true)
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 429) {
+          setError(err.detail || err.message)
+        } else if (err.status === 401) {
+          setError(twoFactorNeeded ? t('auth.invalid2faCode') : t('auth.loginFailed'))
+        } else {
+          setError(err.detail || t('common.error'))
+        }
+      } else if (err instanceof Error && err.message) {
+        setError(err.message)
+      } else {
+        setError(twoFactorNeeded ? t('auth.invalid2faCode') : t('auth.loginFailed'))
+      }
     } finally {
       setSubmitting(false)
     }
@@ -76,19 +94,46 @@ export function LoginPage() {
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              disabled={submitting || loading}
-              error={error ?? undefined}
+              disabled={submitting || loading || twoFactorNeeded}
               required
             />
+            {twoFactorNeeded && (
+              <Input
+                label={t('auth.twoFactorCode')}
+                className="surface-panel font-mono text-center tracking-widest text-lg"
+                name="totpCode"
+                autoComplete="one-time-code"
+                placeholder="123456"
+                maxLength={6}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                disabled={submitting || loading}
+                error={error ?? undefined}
+                autoFocus
+                required
+              />
+            )}
+            {!twoFactorNeeded && error && (
+              <p className="text-xs text-rose-400">{error}</p>
+            )}
             <Button
               type="submit"
               size="lg"
               className="w-full mt-2"
-              disabled={submitting || loading}
+              disabled={submitting || loading || (twoFactorNeeded && totpCode.length !== 6)}
             >
               <LogIn size={18} />
-              {submitting ? t('auth.signingIn') : t('auth.signIn')}
+              {submitting ? t('auth.signingIn') : twoFactorNeeded ? t('auth.verify') : t('auth.signIn')}
             </Button>
+            {twoFactorNeeded && (
+              <button
+                type="button"
+                onClick={() => { setTwoFactorNeeded(false); setTotpCode(''); setError(null) }}
+                className="w-full text-center text-xs text-text-muted hover:text-zinc-300 transition-colors pt-1 cursor-pointer"
+              >
+                {t('common.cancel')}
+              </button>
+            )}
           </form>
       </section>
     </main>

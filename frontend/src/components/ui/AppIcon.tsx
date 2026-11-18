@@ -21,6 +21,9 @@ import global from '@/assets/icons/global.png'
 import noServers from '@/assets/icons/no-servers.png'
 import noActiveVpn from '@/assets/icons/no-active-vpn.png'
 import noConfigs from '@/assets/icons/no-configs.png'
+import twoFactor from '@/assets/icons/two-factor.png'
+import backup from '@/assets/icons/backup.png'
+import passwordIcon from '@/assets/icons/password.png'
 import socks from '@/assets/icons/socks.png'
 import multihop from '@/assets/icons/multihop.png'
 import server from '@/assets/icons/server.png'
@@ -28,7 +31,7 @@ import settings from '@/assets/icons/settings.png'
 import { cn } from '@/lib/utils'
 
 // Legacy names retained for compatibility; new UI uses the unique artwork below.
-const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs }
+const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs, 'two-factor': twoFactor, backup, password: passwordIcon }
 
 export type AppIconName = keyof typeof icons
 

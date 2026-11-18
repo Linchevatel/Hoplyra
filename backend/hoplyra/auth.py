@@ -42,7 +42,10 @@ def is_authenticated(request: Request) -> bool:
         return False
     from hoplyra.panel_auth import get_session_version
 
-    return sv == get_session_version(str(request.session.get("user") or "admin"))
+    current_sv = get_session_version(str(request.session.get("user") or "admin"))
+    if current_sv is None:
+        return False
+    return sv == current_sv
 
 
 def require_authenticated(request: Request) -> None:

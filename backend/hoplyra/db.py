@@ -88,6 +88,12 @@ def init_db() -> None:
         auth_cols = {r["name"] for r in conn.execute("PRAGMA table_info(panel_auth)")}
         if "session_version" not in auth_cols:
             conn.execute("ALTER TABLE panel_auth ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+        if "totp_secret" not in auth_cols:
+            conn.execute("ALTER TABLE panel_auth ADD COLUMN totp_secret TEXT")
+        if "totp_enabled" not in auth_cols:
+            conn.execute("ALTER TABLE panel_auth ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
+        if "totp_last_step" not in auth_cols:
+            conn.execute("ALTER TABLE panel_auth ADD COLUMN totp_last_step INTEGER")
     migrate_auth_secrets()
     from hoplyra.panel_auth import ensure_default_admin
 

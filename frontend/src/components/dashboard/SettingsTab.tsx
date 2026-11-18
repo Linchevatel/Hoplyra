@@ -1,18 +1,24 @@
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { Database, RotateCcw, ShieldAlert, Upload } from 'lucide-react'
+import { Database, KeyRound, RotateCcw, ShieldAlert, Upload } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { AppIcon } from '@/components/ui/AppIcon'
 import {
   changePasswordApi,
+  disable2faApi,
   downloadDbBackupApi,
+  enable2faApi,
   fetchDbBackupInfo,
   restoreDbBackupApi,
   restoreDbBackupUploadApi,
+  setup2faApi,
   type DbBackupEntry,
 } from '@/lib/api'
+import { QrImage } from '@/components/ui/QrImage'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/i18n/i18n-context'
 
@@ -32,7 +38,7 @@ function formatBackupDate(iso: string): string {
 
 export function SettingsTab() {
   const { t } = useI18n()
-  const { username, defaultPassword, refresh } = useAuth()
+  const { username, defaultPassword, twoFactorEnabled, refresh } = useAuth()
   const uploadRef = useRef<HTMLInputElement>(null)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -47,6 +53,70 @@ export function SettingsTab() {
   const [backingUp, setBackingUp] = useState(false)
   const [restoringName, setRestoringName] = useState<string | null>(null)
   const [uploadRestoring, setUploadRestoring] = useState(false)
+
+  // 2FA state
+  const [settingUp2fa, setSettingUp2fa] = useState(false)
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUri: string } | null>(null)
+  const [enableCode, setEnableCode] = useState('')
+  const [totpError, setTotpError] = useState<string | null>(null)
+  const [totpSuccess, setTotpSuccess] = useState<string | null>(null)
+  const [disabling2fa, setDisabling2fa] = useState(false)
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [totpBusy, setTotpBusy] = useState(false)
+
+  async function handleStartSetup2fa() {
+    setTotpError(null)
+    setTotpSuccess(null)
+    setTotpBusy(true)
+    try {
+      const res = await setup2faApi()
+      setTotpSetup(res)
+      setSettingUp2fa(true)
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
+
+  async function handleEnable2fa(e: FormEvent) {
+    e.preventDefault()
+    setTotpError(null)
+    setTotpSuccess(null)
+    setTotpBusy(true)
+    try {
+      await enable2faApi(enableCode.trim())
+      setSettingUp2fa(false)
+      setTotpSetup(null)
+      setEnableCode('')
+      setTotpSuccess(t('settings.twoFactorSuccessEnabled'))
+      await refresh()
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
+
+  async function handleDisable2fa(e: FormEvent) {
+    e.preventDefault()
+    setTotpError(null)
+    setTotpSuccess(null)
+    setTotpBusy(true)
+    try {
+      await disable2faApi(disablePassword, disableCode.trim())
+      setDisabling2fa(false)
+      setDisablePassword('')
+      setDisableCode('')
+      setTotpSuccess(t('settings.twoFactorSuccessDisabled'))
+      await refresh()
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
 
   const loadBackupInfo = useCallback(async () => {
     const info = await fetchDbBackupInfo()
@@ -152,10 +222,14 @@ export function SettingsTab() {
 
       <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
         <Card className="p-6 space-y-5">
-          <div>
-            <h2 className="font-medium">{t('settings.changePassword')}</h2>
-            <p className="text-xs text-text-muted mt-3">{t('auth.username')}</p>
-            <p className="text-zinc-100 font-medium mt-1">{username ?? 'admin'}</p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-medium">{t('settings.changePassword')}</h2>
+              <p className="text-xs text-text-muted mt-1">{t('auth.username')}: <span className="text-zinc-100 font-medium">{username ?? 'admin'}</span></p>
+            </div>
+            <div className="shrink-0 drop-shadow-[0_0_12px_rgba(212,162,76,0.35)]">
+              <AppIcon name="password" size={40} />
+            </div>
           </div>
 
           <form onSubmit={onSubmit} className="space-y-4">
@@ -195,15 +269,157 @@ export function SettingsTab() {
           </form>
         </Card>
 
+        {/* 2FA Card */}
+        <Card className="p-6 space-y-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-medium">{t('settings.twoFactorTitle')}</h2>
+                <Badge variant={twoFactorEnabled ? 'success' : 'default'}>
+                  {twoFactorEnabled ? t('settings.twoFactorEnabledBadge') : t('settings.twoFactorDisabledBadge')}
+                </Badge>
+              </div>
+              <p className="text-xs text-text-muted mt-1">{t('settings.twoFactorSubtitle')}</p>
+            </div>
+            <div className="shrink-0 drop-shadow-[0_0_12px_rgba(212,162,76,0.35)]">
+              <AppIcon name="two-factor" size={40} />
+            </div>
+          </div>
+
+          {totpSuccess && <p className="text-sm text-emerald-400">{totpSuccess}</p>}
+          {totpError && <p className="text-sm text-rose-400">{totpError}</p>}
+
+          {!twoFactorEnabled && !settingUp2fa && (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={totpBusy}
+              onClick={handleStartSetup2fa}
+            >
+              <KeyRound size={16} />
+              {t('settings.twoFactorEnableBtn')}
+            </Button>
+          )}
+
+          {!twoFactorEnabled && settingUp2fa && totpSetup && (
+            <form onSubmit={handleEnable2fa} className="space-y-4 pt-1 border-t border-white/5">
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-zinc-300">{t('settings.twoFactorScanQr')}</p>
+                <div className="flex justify-center p-3 rounded-xl bg-white w-fit mx-auto">
+                  <QrImage data={totpSetup.otpauthUri} size={180} />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs text-text-muted">{t('settings.twoFactorManualKey')}</p>
+                <code className="block p-2 rounded-lg bg-black/40 text-xs font-mono text-accent-cyan tracking-wider select-all break-all text-center">
+                  {totpSetup.secret}
+                </code>
+              </div>
+
+              <div className="space-y-2">
+                <Input
+                  label={t('settings.twoFactorEnterCode')}
+                  className="font-mono text-center tracking-widest text-lg"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  maxLength={6}
+                  value={enableCode}
+                  onChange={(e) => setEnableCode(e.target.value.replace(/\D/g, ''))}
+                  disabled={totpBusy}
+                  required
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={totpBusy}
+                  onClick={() => { setSettingUp2fa(false); setTotpSetup(null); setEnableCode(''); setTotpError(null) }}
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={totpBusy || enableCode.length !== 6}
+                >
+                  {totpBusy ? t('settings.twoFactorActivating') : t('settings.twoFactorActivate')}
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {twoFactorEnabled && !disabling2fa && (
+            <Button
+              type="button"
+              variant="secondary"
+              className="text-rose-400 hover:text-rose-300"
+              disabled={totpBusy}
+              onClick={() => { setDisabling2fa(true); setTotpError(null); setTotpSuccess(null) }}
+            >
+              {t('settings.twoFactorDisableBtn')}
+            </Button>
+          )}
+
+          {twoFactorEnabled && disabling2fa && (
+            <form onSubmit={handleDisable2fa} className="space-y-3 pt-1 border-t border-white/5">
+              <p className="text-xs text-zinc-300">{t('settings.twoFactorDisableHint')}</p>
+              <Input
+                label={t('settings.currentPassword')}
+                type="password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                disabled={totpBusy}
+                required
+              />
+              <Input
+                label={t('auth.twoFactorCode')}
+                className="font-mono text-center tracking-widest text-lg"
+                autoComplete="one-time-code"
+                placeholder="123456"
+                maxLength={6}
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ''))}
+                disabled={totpBusy}
+                required
+              />
+              <div className="flex gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={totpBusy}
+                  onClick={() => { setDisabling2fa(false); setDisablePassword(''); setDisableCode(''); setTotpError(null) }}
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  className="text-rose-400 hover:text-rose-300"
+                  disabled={totpBusy || !disablePassword || disableCode.length !== 6}
+                >
+                  {t('settings.twoFactorDisableBtn')}
+                </Button>
+              </div>
+            </form>
+          )}
+        </Card>
+
         <Card className="p-6 space-y-4">
-          <div>
-            <p className="font-medium">{t('settings.dbBackupTitle')}</p>
-            <p className="text-sm text-text-muted mt-1">{t('settings.dbBackupHint')}</p>
-            {backupDir && (
-              <p className="text-[11px] text-text-muted mt-2 font-mono break-all">
-                {t('settings.dbBackupDir')}: {backupDir}/
-              </p>
-            )}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-medium">{t('settings.dbBackupTitle')}</p>
+              <p className="text-sm text-text-muted mt-1">{t('settings.dbBackupHint')}</p>
+              {backupDir && (
+                <p className="text-[11px] text-text-muted mt-2 font-mono break-all">
+                  {t('settings.dbBackupDir')}: {backupDir}/
+                </p>
+              )}
+            </div>
+            <div className="shrink-0 drop-shadow-[0_0_12px_rgba(212,162,76,0.35)]">
+              <AppIcon name="backup" size={40} />
+            </div>
           </div>
 
           {backupError && <p className="text-sm text-rose-400">{backupError}</p>}

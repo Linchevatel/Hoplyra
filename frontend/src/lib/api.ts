@@ -71,19 +71,47 @@ export type AuthMeResponse = {
   authRequired: boolean
   username?: string | null
   defaultPassword?: boolean
+  twoFactorEnabled?: boolean
 }
 
 export function fetchAuthMe(): Promise<AuthMeResponse> {
   return request<AuthMeResponse>('/api/auth/me')
 }
 
+export type LoginResult = {
+  ok?: boolean
+  username?: string
+  defaultPassword?: boolean
+  twoFactorEnabled?: boolean
+  twoFactorRequired?: boolean
+}
+
 export function loginApi(
   username: string,
   password: string,
-): Promise<{ ok: boolean; username: string; defaultPassword?: boolean }> {
+  code?: string,
+): Promise<LoginResult> {
   return request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, ...(code ? { code } : {}) }),
+  })
+}
+
+export function setup2faApi(): Promise<{ secret: string; otpauthUri: string }> {
+  return request('/api/auth/2fa/setup', { method: 'POST' })
+}
+
+export function enable2faApi(code: string): Promise<{ ok: boolean }> {
+  return request('/api/auth/2fa/enable', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+}
+
+export function disable2faApi(password: string, code: string): Promise<{ ok: boolean }> {
+  return request('/api/auth/2fa/disable', {
+    method: 'POST',
+    body: JSON.stringify({ password, code }),
   })
 }
 
