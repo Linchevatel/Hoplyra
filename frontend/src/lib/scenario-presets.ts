@@ -13,22 +13,22 @@ export interface ScenarioPreset {
 export const SCENARIO_PRESETS: ScenarioPreset[] = [
   {
     id: 'bypass',
-    name: 'Обход блокировок',
-    description: 'Xray + Tor — обфускация и выход через анонимную сеть',
+    name: 'Bypass blocks',
+    description: 'Xray + Tor — obfuscation and exit via anonymous network',
     protocols: ['xray', 'tor'],
     serverIndices: [1, 7],
   },
   {
     id: 'streaming',
-    name: 'Стриминг',
-    description: 'AWG или WireGuard — минимальная задержка для видео',
+    name: 'Streaming',
+    description: 'AWG or WireGuard — minimal latency for video',
     protocols: ['awg', 'wg'],
     serverIndices: [0, 2],
   },
   {
     id: 'privacy',
-    name: 'Максимальная приватность',
-    description: 'AWG → Xray → Tor — многослойная анонимизация',
+    name: 'Maximum privacy',
+    description: 'AWG → Xray → Tor — layered anonymization',
     protocols: ['awg', 'xray', 'tor'],
     serverIndices: [0, 1, 7],
   },

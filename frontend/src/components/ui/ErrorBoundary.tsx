@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { t } from '@/i18n/core'
 
 interface Props {
   children: ReactNode
@@ -38,13 +39,13 @@ export class ErrorBoundary extends Component<Props, State> {
             <div className="p-3 rounded-full bg-rose-500/10 text-rose-400">
               <AlertTriangle size={28} />
             </div>
-            <h3 className="text-lg font-semibold text-red-200">Произошла ошибка интерфейса</h3>
+            <h3 className="text-lg font-semibold text-red-200">{t('common.uiErrorTitle')}</h3>
             <p className="text-xs text-zinc-400 max-w-md font-mono bg-zinc-950/60 p-2.5 rounded-lg border border-white/5 break-words">
-              {this.state.error?.message || 'Неизвестная ошибка рендеринга'}
+              {this.state.error?.message || t('common.uiErrorUnknown')}
             </p>
             <Button size="sm" variant="secondary" onClick={this.handleReset} className="mt-2">
               <RotateCcw size={14} />
-              Перезагрузить компонент
+              {t('common.reloadComponent')}
             </Button>
           </div>
         </Card>

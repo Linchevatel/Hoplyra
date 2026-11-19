@@ -28,10 +28,10 @@ export function useProtocolMeta(protocol: Protocol) {
 
   return {
     ...base,
-    description: base.description || t(`protocol.${protocol}.description`),
-    bestFor: base.bestFor || t(`protocol.${protocol}.bestFor`),
+    description: t(`protocol.${protocol}.description`, undefined, base.description),
+    bestFor: t(`protocol.${protocol}.bestFor`, undefined, base.bestFor),
     setup: t(`setup.${setupKey}`),
-    traits: base.traits.length > 0 ? base.traits : tList(`protocol.${protocol}.traits`),
+    traits: tList(`protocol.${protocol}.traits`).length > 0 ? tList(`protocol.${protocol}.traits`) : base.traits,
   }
 }
 
@@ -43,10 +43,10 @@ export function useAllProtocolMeta() {
       const setupKey = SETUP_KEYS[protocol] || 'simple'
       acc[protocol] = {
         ...base,
-        description: t(`protocol.${protocol}.description`),
-        bestFor: t(`protocol.${protocol}.bestFor`),
+        description: t(`protocol.${protocol}.description`, undefined, base.description),
+        bestFor: t(`protocol.${protocol}.bestFor`, undefined, base.bestFor),
         setup: t(`setup.${setupKey}`),
-        traits: tList(`protocol.${protocol}.traits`),
+        traits: tList(`protocol.${protocol}.traits`).length > 0 ? tList(`protocol.${protocol}.traits`) : base.traits,
       }
       return acc
     },

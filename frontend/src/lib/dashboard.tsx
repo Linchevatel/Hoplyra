@@ -704,7 +704,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             pushNotification(createNotification({
               type: 'deploy_error',
               title: t('common.error'),
-              message: `Не удалось удалить сервер: ${err.message}`,
+              message: t('dashboard.servers.deleteServerFailed', { error: err.message }),
             }))
           })
         return

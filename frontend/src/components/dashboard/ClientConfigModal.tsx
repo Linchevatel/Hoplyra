@@ -294,11 +294,11 @@ function ClientConfigModalContent({
                 value={peerName}
                 onChange={(e) => setPeerName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddPeer() } }}
-                placeholder="Имя устройства (напр. iPhone)"
+                placeholder={t('dashboard.configs.peerNamePlaceholder')}
                 className="flex-1 rounded-xl border border-white/10 bg-surface-900/80 px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-accent-cyan/50"
               />
               <Button size="sm" disabled={peerBusy || !peerName.trim()} onClick={handleAddPeer}>
-                Добавить
+                {t('common.add')}
               </Button>
             </div>
             {peerError && <p className="text-xs text-rose-400">{peerError}</p>}
@@ -316,7 +316,7 @@ function ClientConfigModalContent({
               <div className="rounded-xl border border-accent-cyan/25 bg-accent-cyan/[0.04] p-3 text-xs space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-semibold text-zinc-100 truncate">Основной клиент</span>
+                    <span className="font-semibold text-zinc-100 truncate">{t('dashboard.configs.primaryClient')}</span>
                     <span className="px-1.5 py-0.5 rounded bg-accent-cyan/15 text-accent-cyan text-[10px] font-medium">Primary</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -325,10 +325,10 @@ function ClientConfigModalContent({
                         {copiedLink ? <Check size={13} /> : `${bundle.shareLink.scheme}://`}
                       </Button>
                     )}
-                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleCopyFile} title="Скопировать конфиг">
+                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleCopyFile} title={t('dashboard.configs.copyConfig')}>
                       {copiedFile ? <Check size={13} /> : <Copy size={13} />}
                     </Button>
-                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleDownload} title="Скачать .conf">
+                    <Button size="sm" variant="secondary" disabled={!exportReady} onClick={handleDownload} title={t('dashboard.configs.downloadConf')}>
                       <Download size={13} />
                     </Button>
                     {bundle.qrPayload && routingMode !== 'bypass-ru' && (
@@ -420,7 +420,7 @@ function ClientConfigModalContent({
                           onClick={() => handleRevokePeer(p.id)}
                           className="text-rose-400 hover:text-rose-300"
                         >
-                          Отозвать
+                          {t('dashboard.configs.revoke')}
                         </Button>
                       </div>
                     </div>

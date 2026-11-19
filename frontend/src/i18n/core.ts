@@ -60,9 +60,9 @@ function resolve(tree: TranslationTree, path: string): string | string[] | undef
   return res
 }
 
-export function t(path: string, vars?: Record<string, string | number>): string {
+export function t(path: string, vars?: Record<string, string | number>, fallback?: string): string {
   const value = resolve(catalogs[locale], path)
-  if (typeof value !== 'string') return path
+  if (typeof value !== 'string') return fallback !== undefined ? fallback : path
   if (!vars) return value
   return value.replace(/\{(\w+)\}/g, (_, key: string) => String(vars[key] ?? `{${key}}`))
 }

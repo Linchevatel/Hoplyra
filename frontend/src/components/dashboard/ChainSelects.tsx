@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { getLocationFlag, getLocationCity, countryCodeFromLocation } from '@/lib/country-utils'
 import { ProtocolIcon } from '@/components/ui/ProtocolIcon'
 import { useI18n } from '@/i18n/i18n-context'
+import { useAllProtocolMeta } from '@/i18n/useProtocolMeta'
 
 function ServerFlag({ server, size = 'md' }: { server: VpsServer; size?: 'sm' | 'md' }) {
   const flag = getLocationFlag(server.location)
@@ -134,15 +135,16 @@ interface ProtocolSelectProps {
 
 export function ProtocolSelect({ value, onChange, onPointerDown, excludeProtocols = [] }: ProtocolSelectProps) {
   const { t } = useI18n()
+  const meta = useAllProtocolMeta()
   const excluded = new Set(excludeProtocols)
   const options: SelectOption[] = FREE_PROTOCOLS.filter((p) => !excluded.has(p)).map((p) => ({
     value: p,
-    label: PROTOCOLS[p].label,
-    description: PROTOCOLS[p].description,
+    label: meta[p]?.label ?? PROTOCOLS[p].label,
+    description: meta[p]?.description ?? PROTOCOLS[p].description,
     leading: <ProtocolIcon protocol={p} size="md" withGradient />,
   }))
 
-  const current = PROTOCOLS[value]
+  const current = meta[value] ?? PROTOCOLS[value]
 
   return (
     <Select
