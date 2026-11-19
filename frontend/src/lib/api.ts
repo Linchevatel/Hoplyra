@@ -438,3 +438,15 @@ export function deleteConfigPeer(configId: string, peerId: string): Promise<{ st
     method: 'DELETE',
   })
 }
+
+export function censorCheckServerApi(serverId: string): Promise<any> {
+  return request(`/api/servers/${serverId}/censor-check`, {
+    method: 'POST',
+  })
+}
+
+export function censorCheckAllServersApi(): Promise<{ results: Record<string, any> }> {
+  return request('/api/servers/censor-check', {
+    method: 'POST',
+  })
+}

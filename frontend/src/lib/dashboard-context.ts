@@ -23,6 +23,9 @@ interface DashboardContextValue {
   updateServer: (id: string, patch: Partial<Pick<VpsServer, 'tags' | 'notes' | 'name'>>) => void
   removeServer: (id: string) => void
   pingServerById: (id: string) => Promise<void>
+  checkCensorServerById: (id: string) => Promise<void>
+  checkCensorAllServers: () => Promise<void>
+  censorChecking: boolean
   deployProtocol: (
     serverId: string,
     protocol: Protocol,

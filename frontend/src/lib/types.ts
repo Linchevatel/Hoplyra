@@ -51,6 +51,19 @@ export interface VpsServer {
   lastSeen?: string
   /** Прогресс фоновой подготовки VPS (status connecting) */
   prepareProgress?: ServerPrepareProgress
+  censorStatus?: ServerCensorStatus
+}
+
+export interface ServerCensorStatus {
+  rknBlocked?: boolean | null
+  neighborWarning?: boolean
+  rknExact?: boolean
+  rknSubnet?: string | null
+  resolvedIps?: string[]
+  ruReachability: 'ok' | 'degraded' | 'blocked' | 'unknown'
+  ruLatencyMs?: number | null
+  details?: Array<{ target: string; ok: boolean; latencyMs?: number | null; error?: string }>
+  checkedAt?: string
 }
 
 export interface ServerPrepareProgress {

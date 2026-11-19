@@ -298,6 +298,7 @@ def _server_target(row: Any) -> ServerTarget:
 
 
 def _enrich_server(server: dict[str, Any]) -> dict[str, Any]:
+    from hoplyra.censor_check import get_cached_censor_status
     with connect() as conn:
         cfg = conn.execute(
             "SELECT protocol FROM configs WHERE server_id = ? AND status = 'active' LIMIT 1",
@@ -308,6 +309,9 @@ def _enrich_server(server: dict[str, Any]) -> dict[str, Any]:
     job = get_prepare_job(server["id"])
     if job:
         server["prepareProgress"] = job.to_dict()
+    censor = get_cached_censor_status(server["id"])
+    if censor:
+        server["censorStatus"] = censor
     return server
 
 
@@ -1074,6 +1078,42 @@ def ping_server(server_id: str) -> dict[str, Any]:
     if probe.get("podmanVersion"):
         result["podmanVersion"] = probe["podmanVersion"]
     return result
+
+
+@app.post("/api/servers/{server_id}/censor-check")
+def censor_check_server(server_id: str) -> dict[str, Any]:
+    from hoplyra.censor_check import check_server_censor
+    row = _get_server_row(server_id)
+    target = _server_target(row)
+    runner = RemoteRunner(target)
+    result = check_server_censor(server_id, row["host"], runner, cache_dir=DATA_DIR)
+    return {"serverId": server_id, "host": row["host"], **result}
+
+
+@app.post("/api/servers/censor-check")
+def censor_check_all_servers() -> dict[str, Any]:
+    from concurrent.futures import ThreadPoolExecutor
+    from hoplyra.censor_check import check_server_censor
+
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM servers WHERE status != 'offline'").fetchall()
+
+    results: dict[str, Any] = {}
+
+    def _check(r: Any):
+        sid = r["id"]
+        try:
+            target = _server_target(r)
+            runner = RemoteRunner(target)
+            res = check_server_censor(sid, r["host"], runner, cache_dir=DATA_DIR)
+            results[sid] = res
+        except Exception as exc:
+            results[sid] = {"error": str(exc), "rknBlocked": False, "ruReachability": "unknown"}
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(rows)))) as pool:
+        list(pool.map(_check, rows))
+
+    return {"results": results}
 
 
 @app.get("/api/configs")

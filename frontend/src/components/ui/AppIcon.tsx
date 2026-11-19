@@ -28,10 +28,14 @@ import socks from '@/assets/icons/socks.png'
 import multihop from '@/assets/icons/multihop.png'
 import server from '@/assets/icons/server.png'
 import settings from '@/assets/icons/settings.png'
+import censorProbe from '@/assets/icons/censor-probe.png'
+import censorClean from '@/assets/icons/censor-clean.png'
+import censorBlocked from '@/assets/icons/censor-blocked.png'
+import censorRoute from '@/assets/icons/censor-route.png'
 import { cn } from '@/lib/utils'
 
 // Legacy names retained for compatibility; new UI uses the unique artwork below.
-const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs, 'two-factor': twoFactor, backup, password: passwordIcon }
+const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs, 'two-factor': twoFactor, backup, password: passwordIcon, 'censor-probe': censorProbe, 'censor-clean': censorClean, 'censor-blocked': censorBlocked, 'censor-route': censorRoute }
 
 export type AppIconName = keyof typeof icons
 

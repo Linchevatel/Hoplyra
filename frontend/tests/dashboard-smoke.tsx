@@ -21,6 +21,7 @@ const dashboard = {
   setChainDraft: noop, addServer: async () => {}, updateServer: noop, removeServer: noop, pingServerById: async () => {}, deployProtocol: async () => undefined,
   deployChain: async () => {}, stopConfig: noop, restartConfig: noop, upgradeAwgConfig: noop,
   enableSocksProxy: noop, disableSocksProxy: noop, removeConfig: noop, updateConfig: noop,
+  checkCensorServerById: async () => {}, checkCensorAllServers: async () => {}, censorChecking: false,
   saveUserChainTemplate: noop, removeUserChainTemplate: noop, markNotificationRead: noop,
   markAllNotificationsRead: noop, dismissNotification: noop, clearAllNotifications: noop,
 }

@@ -1,7 +1,7 @@
 import { AppIcon } from '@/components/ui/AppIcon'
 import { isValidHost } from '@/lib/host-validation'
 import { useState, useEffect, useCallback, type FormEvent } from 'react'
-import { Trash2, Monitor, Shield, GitBranch, Tag, StickyNote, X, RefreshCw, Pencil, ChevronDown, Plus } from 'lucide-react'
+import { Trash2, Monitor, Shield, ShieldCheck, GitBranch, Tag, StickyNote, X, RefreshCw, Pencil, ChevronDown, Plus } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -14,6 +14,7 @@ import { getLocationFlag, getLocationCity, countryCodeFromLocation } from '@/lib
 import { isLocalHost } from '@/lib/geo-utils'
 import { ProtocolIcon } from '@/components/ui/ProtocolIcon'
 import { ServerPrepareBar } from '@/components/dashboard/ServerPrepareBar'
+import { ServerCensorBadge } from '@/components/dashboard/ServerCensorBadge'
 import type { VpsServer } from '@/lib/types'
 import { useI18n } from '@/i18n/i18n-context'
 import { cn, formatLatencyMs, hasLatencyMs } from '@/lib/utils'
@@ -22,7 +23,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 
 export function ServersTab() {
   const { t, pluralServers } = useI18n()
-  const { servers, addServer, removeServer } = useDashboard()
+  const { servers, addServer, removeServer, checkCensorAllServers, censorChecking } = useDashboard()
   const [showForm, setShowForm] = useState(false)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
 
@@ -47,9 +48,31 @@ export function ServersTab() {
   return (
     <div className="dashboard-page">
       <PageHeader title={t('dashboard.servers.title')} subtitle={`${servers.length} ${pluralServers(servers.length)}`}>
-        <Button onClick={() => setShowForm(true)} size="sm">
-          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center"><Plus size={18} /></span> {t('dashboard.servers.addServer')}
-        </Button>
+        <div className="flex items-center gap-2">
+          {servers.length > 0 && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={censorChecking}
+              onClick={checkCensorAllServers}
+              title={t('dashboard.servers.checkRuBan')}
+            >
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center">
+                {censorChecking ? (
+                  <RefreshCw size={15} className="animate-spin text-accent-cyan" />
+                ) : (
+                  <ShieldCheck size={16} />
+                )}
+              </span>
+              <span>
+                {censorChecking ? t('dashboard.servers.checkingRuBan') : t('dashboard.servers.checkRuBan')}
+              </span>
+            </Button>
+          )}
+          <Button onClick={() => setShowForm(true)} size="sm">
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center"><Plus size={18} /></span> {t('dashboard.servers.addServer')}
+          </Button>
+        </div>
       </PageHeader>
 
       <AnimatePresence>
@@ -283,6 +306,7 @@ function ServerCard({
 
         <div className="mt-1.5 pl-6 sm:pl-7 flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
           <span className="text-xs text-text-muted font-mono truncate max-w-full">{server.host}</span>
+          <ServerCensorBadge status={server.censorStatus} />
           {visibleTags.length > 0 && (
             <span className="flex flex-wrap items-center gap-1 min-w-0">
               {visibleTags.map((tag) => (

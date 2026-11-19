@@ -175,6 +175,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const deletingConfigIdsRef = useRef<Set<string>>(new Set())
   const [removingConfigIds, setRemovingConfigIds] = useState<Set<string>>(() => new Set())
   const removingConfigIdsRef = useRef<Set<string>>(new Set())
+  const [censorChecking, setCensorChecking] = useState(false)
 
   const geoBackfilled = useRef(false)
   const draftSanitized = useRef(false)
@@ -688,6 +689,48 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     },
     [apiEnabled, pushNotification],
   )
+
+  const checkCensorServerById = useCallback(
+    async (id: string) => {
+      if (!apiEnabled || isDemoServerId(id)) return
+      try {
+        const res = await api.censorCheckServerApi(id)
+        setServers((prev) =>
+          prev.map((s) => (s.id === id ? { ...s, censorStatus: res } : s)),
+        )
+      } catch (err) {
+        pushNotification(
+          createNotification({
+            type: 'deploy_error',
+            title: t('dashboard.servers.censorCheckFailed'),
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        )
+      }
+    },
+    [apiEnabled, pushNotification],
+  )
+
+  const checkCensorAllServers = useCallback(async () => {
+    if (!apiEnabled) return
+    setCensorChecking(true)
+    try {
+      const { results } = await api.censorCheckAllServersApi()
+      setServers((prev) =>
+        prev.map((s) => (results[s.id] ? { ...s, censorStatus: results[s.id] } : s)),
+      )
+    } catch (err) {
+      pushNotification(
+        createNotification({
+          type: 'deploy_error',
+          title: t('dashboard.servers.censorCheckFailed'),
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      )
+    } finally {
+      setCensorChecking(false)
+    }
+  }, [apiEnabled, pushNotification])
 
   const removeServer = useCallback(
     (id: string) => {
@@ -1447,6 +1490,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         updateServer,
         removeServer,
         pingServerById,
+        checkCensorServerById,
+        checkCensorAllServers,
+        censorChecking,
         deployProtocol,
         deployChain,
         chainDeployUi,
