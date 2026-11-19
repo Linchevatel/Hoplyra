@@ -109,6 +109,8 @@ export const en: TranslationTree = {
     twoFactorCode: 'Verification code (2FA)',
     verify: 'Verify',
     defaultHint: 'After install: admin / admin',
+    gatewayGranted: 'ACCESS GRANTED',
+    loginSuccess: 'Login successful',
   },
   common: {
     openSource: 'Open source',

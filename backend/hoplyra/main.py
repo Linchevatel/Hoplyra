@@ -155,10 +155,13 @@ def _reserve_totp_attempt(username: str) -> None:
         attempts = [t for t in _FAILED_TOTP_ATTEMPTS.get(username, []) if now - t < _TOTP_LOCKOUT_SECONDS]
         _FAILED_TOTP_ATTEMPTS[username] = attempts
         if len(attempts) >= _MAX_TOTP_ATTEMPTS:
-            remaining = int(_TOTP_LOCKOUT_SECONDS - (now - attempts[0]))
+            import math
+            remaining = math.ceil(_TOTP_LOCKOUT_SECONDS - (now - attempts[0]))
+            rem_sec = max(1, int(remaining))
             raise HTTPException(
-                429,
-                f"Слишком много неверных попыток ввода 2FA. Попробуйте снова через {max(1, remaining)} сек.",
+                status_code=429,
+                detail=f"Too many attempts. Try again in {rem_sec} seconds.",
+                headers={"Retry-After": str(rem_sec)},
             )
         # Атомарно бронируем слот попытки сразу
         attempts.append(now)

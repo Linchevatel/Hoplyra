@@ -109,6 +109,8 @@ export const ru: TranslationTree = {
     twoFactorCode: 'Код подтверждения (2FA)',
     verify: 'Подтвердить',
     defaultHint: 'После установки: admin / admin',
+    gatewayGranted: 'ДОСТУП ПРЕДОСТАВЛЕН',
+    loginSuccess: 'Вход выполнен',
   },
   common: {
     openSource: 'Open source',

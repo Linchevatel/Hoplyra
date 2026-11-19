@@ -6,11 +6,13 @@ const BASE = import.meta.env?.VITE_API_URL ?? ''
 export class ApiError extends Error {
   status: number
   detail: string
-  constructor(status: number, detail: string) {
+  retryAfter?: number | null
+  constructor(status: number, detail: string, retryAfter?: number | null) {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.retryAfter = retryAfter
   }
 }
 
@@ -51,7 +53,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new ApiError(res.status, parseError(body, res.status))
+    const retryAfterHeader = res.headers.get('Retry-After')
+    const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : null
+    throw new ApiError(res.status, parseError(body, res.status), isNaN(retryAfter as number) ? null : retryAfter)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
