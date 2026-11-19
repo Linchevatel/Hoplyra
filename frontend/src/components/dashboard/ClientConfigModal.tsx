@@ -361,7 +361,7 @@ function ClientConfigModalContent({
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="font-medium text-zinc-200 truncate">{p.name}</p>
-                        <p className="text-[11px] text-text-muted font-mono">{peerAddr}</p>
+                        <p className="text-[11px] text-text-muted font-mono mt-0.5">{peerAddr}</p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {peerShareUri && routingMode !== 'bypass-ru' && (

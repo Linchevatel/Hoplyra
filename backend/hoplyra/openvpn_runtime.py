@@ -42,6 +42,8 @@ user nobody
 group nobody
 persist-key
 persist-tun
+status {OPENVPN_MOUNT}/status.log 10
+status-version 1
 verb 0
 """
 

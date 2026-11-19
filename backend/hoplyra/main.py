@@ -1765,8 +1765,17 @@ class PeerCreateRequest(BaseModel):
 def get_config_peers(config_id: str, mode: str | None = None) -> list[dict[str, Any]]:
     from hoplyra.peers import list_peers
 
-    cfg, _ = _get_config_and_server(config_id)
-    peers = list_peers(config_id)
+    cfg_row, srv_row = _get_config_and_server(config_id)
+    cfg = dict(cfg_row)
+    runner = None
+    if cfg.get("status") == "active":
+        try:
+            target = _server_target(srv_row)
+            runner = RemoteRunner(target)
+        except Exception:
+            pass
+
+    peers = list_peers(config_id, runner=runner)
     if mode == "bypass-ru" and cfg["protocol"] in ("awg", "wg"):
         import ipaddress
         import re

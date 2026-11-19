@@ -35,6 +35,7 @@ export function ClientConfigsTab() {
   const { servers, configs, updateConfig } = useDashboard()
   const [filter, setFilter] = useState<Filter>('all')
   const [configModalId, setConfigModalId] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   const availableConfigs = useMemo(
     () => sortConfigs(configs.filter(canShowClientConfig)),
@@ -127,6 +128,7 @@ export function ClientConfigsTab() {
                 server={server}
                 servers={servers}
                 onOpen={() => setConfigModalId(config.id)}
+                refreshSignal={refreshKey}
               />
             )
           })}
@@ -138,8 +140,15 @@ export function ClientConfigsTab() {
           config={configModal}
           server={configModalServer}
           servers={servers}
-          onClose={() => setConfigModalId(null)}
-          onConfigUpdated={updateConfig}
+          onClose={() => {
+            setConfigModalId(null)
+            // Обновляем список пиров в карточке после закрытия модалки
+            setRefreshKey((n) => n + 1)
+          }}
+          onConfigUpdated={(cfg) => {
+            updateConfig(cfg)
+            setRefreshKey((n) => n + 1)
+          }}
         />
       )}
     </div>

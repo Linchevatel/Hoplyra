@@ -4,6 +4,7 @@ from __future__ import annotations
 import ipaddress
 import itertools
 import json
+import logging
 import re
 import shlex
 import uuid
@@ -13,6 +14,8 @@ from typing import Any
 from hoplyra.db import connect, new_id
 from hoplyra.remote import RemoteRunner
 from hoplyra.wg_keys import generate_wg_keypair, generate_wg_psk
+
+log = logging.getLogger("hoplyra.peers")
 
 
 def _now_iso() -> str:
@@ -254,6 +257,69 @@ def _build_peer_amnezia_uri(cfg: dict[str, Any], peer_name: str, client_conf: st
         return None
 
 
+def get_peer_stats(cfg: dict[str, Any], runner: RemoteRunner) -> dict[str, dict[str, Any]]:
+    """Retrieve real-time rx/tx bytes and last_handshake for all peers on server.
+    
+    Returns mapping: public_key (or peer identifier) -> {
+      "rxBytes": int,
+      "txBytes": int,
+      "lastHandshake": int (epoch timestamp or 0)
+    }
+    """
+    protocol = cfg["protocol"]
+    if protocol not in ("awg", "wg", "xray", "openvpn"):
+        return {}
+
+    stats: dict[str, dict[str, Any]] = {}
+    if protocol in ("awg", "wg"):
+        _, tool_prefix, q_iface = _iface_and_prefix(cfg)
+        cmd = f"{tool_prefix} show {q_iface} dump"
+        code, out, _ = runner.run(cmd, timeout=10)
+        if code == 0:
+            for line in out.splitlines():
+                parts = line.strip().split("\t")
+                # Format wg dump:
+                # interface: private-key public-key listen-port fwmark
+                # peer: public-key preshared-key endpoint allowed-ips latest-handshake transfer-rx transfer-tx persistent-keepalive
+                if len(parts) >= 8:
+                    pub = parts[0]
+                    try:
+                        handshake = int(parts[4])
+                        rx = int(parts[5])
+                        tx = int(parts[6])
+                        stats[pub] = {
+                            "rxBytes": rx,
+                            "txBytes": tx,
+                            "lastHandshake": handshake,
+                        }
+                    except ValueError:
+                        continue
+    elif protocol == "openvpn":
+        inst = cfg.get("instance_path") or f"/opt/hoplyra/instances/{cfg['id']}"
+        status_file = f"{inst}/status.log"
+        quote = shlex.quote
+        code, out, _ = runner.run(f"cat {quote(status_file)} 2>/dev/null", timeout=10)
+        if code == 0:
+            # OpenVPN status.log CLIENT LIST
+            for line in out.splitlines():
+                parts = line.split(",")
+                if len(parts) >= 5 and parts[0] != "Common Name":
+                    cn = parts[0]
+                    try:
+                        rx = int(parts[2])
+                        tx = int(parts[3])
+                        # Для OpenVPN handshake не применим, но передаем признак активного подключения
+                        stats[cn] = {
+                            "rxBytes": rx,
+                            "txBytes": tx,
+                            "lastHandshake": None,
+                            "isConnected": True,
+                        }
+                    except ValueError:
+                        continue
+    return stats
+
+
 def _extract_xray_peer_vless_uri(cfg: dict[str, Any], peer_uuid: str) -> str | None:
     if cfg.get("protocol") != "xray":
         return None
@@ -269,7 +335,7 @@ def _extract_xray_peer_vless_uri(cfg: dict[str, Any], peer_uuid: str) -> str | N
     return None
 
 
-def list_peers(config_id: str) -> list[dict[str, Any]]:
+def list_peers(config_id: str, runner: RemoteRunner | None = None) -> list[dict[str, Any]]:
     with connect() as conn:
         cfg_row = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
         cfg = dict(cfg_row) if cfg_row else {}
@@ -278,20 +344,38 @@ def list_peers(config_id: str) -> list[dict[str, Any]]:
             "FROM config_peers WHERE config_id = ? AND revoked_at IS NULL ORDER BY created_at ASC",
             (config_id,),
         ).fetchall()
-    return [
-        {
+
+    stats: dict[str, dict[str, Any]] = {}
+    if runner and cfg.get("status") == "active":
+        try:
+            stats = get_peer_stats(cfg, runner)
+        except Exception as exc:
+            log.warning("Failed retrieving peer live stats for %s: %s", config_id, exc)
+
+    res = []
+    protocol = cfg.get("protocol")
+    for r in rows:
+        pub = r["public_key"]
+        p_stat = stats.get(pub)
+        # Замечание [2]: Для протоколов без статистики (Xray) или когда сбор не дал данных возвращаем None, а не ложный 0
+        has_stats = p_stat is not None
+        res.append({
             "id": r["id"],
             "configId": r["config_id"],
             "name": r["name"],
-            "publicKey": r["public_key"],
+            "publicKey": pub,
             "clientIp": r["client_ip"],
             "clientConfig": r["client_config"],
             "amneziaVpnUri": _build_peer_amnezia_uri(cfg, r["name"], r["client_config"]),
-            "vlessUri": _extract_xray_peer_vless_uri(cfg, r["public_key"]),
+            "vlessUri": _extract_xray_peer_vless_uri(cfg, pub),
             "createdAt": r["created_at"],
-        }
-        for r in rows
-    ]
+            "rxBytes": p_stat.get("rxBytes") if has_stats else None,
+            "txBytes": p_stat.get("txBytes") if has_stats else None,
+            "lastHandshake": p_stat.get("lastHandshake") if has_stats else None,
+            "isConnected": p_stat.get("isConnected") if has_stats else None,
+            "statsSupported": protocol in ("awg", "wg", "openvpn"),
+        })
+    return res
 
 
 def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, Any]:

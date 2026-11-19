@@ -419,6 +419,11 @@ export interface ConfigPeer {
   amneziaVpnUri?: string | null
   vlessUri?: string | null
   createdAt: string
+  rxBytes?: number | null
+  txBytes?: number | null
+  lastHandshake?: number | null
+  isConnected?: boolean | null
+  statsSupported?: boolean
 }
 
 export function fetchConfigPeers(configId: string, mode?: 'all' | 'bypass-ru'): Promise<ConfigPeer[]> {

@@ -5,6 +5,23 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export function formatBytes(bytes?: number | null): string {
+  if (bytes == null || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const val = bytes / Math.pow(1024, i)
+  return `${val >= 10 || i === 0 ? Math.round(val) : val.toFixed(1)} ${units[i]}`
+}
+
+export function formatLastSeen(epochSeconds?: number | null): string {
+  if (!epochSeconds || epochSeconds <= 0) return 'offline'
+  const diff = Math.floor(Date.now() / 1000) - epochSeconds
+  if (diff < 150) return 'online'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
 export function formatLatencyMs(ms?: number | null): string {
   if (ms == null || ms <= 0) return '—'
   return `${ms} ms`
