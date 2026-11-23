@@ -459,3 +459,24 @@ export function censorCheckAllServersApi(): Promise<{ results: Record<string, an
     method: 'POST',
   })
 }
+
+export type SystemUpdateInfo = {
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  releaseNotes?: string
+  publishedAt?: string
+  releaseUrl?: string
+  error?: string
+}
+
+export function checkSystemUpdateApi(force: boolean = false): Promise<SystemUpdateInfo> {
+  return request<SystemUpdateInfo>(`/api/system/update/check${force ? '?force=true' : ''}`)
+}
+
+export function applySystemUpdateApi(version?: string): Promise<{ ok: boolean; status: string; message: string; targetVersion?: string }> {
+  return request<{ ok: boolean; status: string; message: string; targetVersion?: string }>('/api/system/update/apply', {
+    method: 'POST',
+    body: JSON.stringify({ version: version || null }),
+  })
+}

@@ -792,6 +792,23 @@ async def settings_db_restore_upload(file: UploadFile = File(...)) -> dict[str, 
     }
 
 
+@app.get("/api/system/update/check")
+def system_update_check(force: bool = False) -> dict[str, Any]:
+    from hoplyra.system_update import check_for_updates
+    return check_for_updates(force=force)
+
+
+class SystemUpdateApplyRequest(BaseModel):
+    version: str | None = None
+
+
+@app.post("/api/system/update/apply")
+def system_update_apply(body: SystemUpdateApplyRequest | None = None) -> dict[str, Any]:
+    from hoplyra.system_update import apply_update_async
+    target = body.version if body else None
+    return apply_update_async(target_version=target)
+
+
 @app.get("/api/servers")
 def list_servers() -> list[dict[str, Any]]:
     with connect() as conn:
