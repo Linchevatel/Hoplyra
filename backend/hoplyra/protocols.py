@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from hoplyra.container_images import ensure_image
 from hoplyra.db import DATA_DIR
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_down, podman_compose_up
 from hoplyra.wg_keys import generate_wg_keypair, generate_wg_psk
@@ -406,8 +407,148 @@ class XrayDeployer(ProtocolDeployer):
         )
 
 
+
+def find_hysteria2_port(runner: RemoteRunner, base_port: int = 443) -> int:
+    # Avoid both UDP and TCP reservations so protocols can share the allocator.
+    code, output, err = runner.run("ss -H -lntu", timeout=30)
+    if code != 0:
+        raise RuntimeError(f"Не удалось получить список занятых портов через ss: {err or output or 'exit ' + str(code)}")
+    used = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 5:
+            match = re.search(r":(\d+)$", fields[4])
+            if match:
+                used.add(int(match[1]))
+    for port in range(base_port, 65536):
+        if port not in used:
+            return port
+    raise RuntimeError("No free Hysteria 2 listen port available")
+
+
+def generate_self_signed_cert_bundle(san: str = "bing.com") -> tuple[str, str, str]:
+    """Generate self-signed ECDSA P-256 certificate with SAN and SHA-256 fingerprint for pinSHA256."""
+    from datetime import datetime, timezone, timedelta
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    import hashlib
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, san)])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=3650))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(san)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("ascii")
+    cert_der = cert.public_bytes(serialization.Encoding.DER)
+    pin_sha256 = hashlib.sha256(cert_der).hexdigest()
+    return cert_pem, key_pem, pin_sha256
+
+
+def hysteria2_bundle(path: str, container: str, host: str, port: int, *,
+                     host_network: bool = False, socks_port: int | None = None,
+                     service: str = "hysteria2",
+                     cert_bundle: tuple[str, str, str] | None = None) -> tuple[str, str, str, dict[str, Any], tuple[str, str]]:
+    """Build server YAML, compose service, importable client material, metadata, and cert files (cert_pem, key_pem)."""
+    password = secrets.token_urlsafe(16)
+    if cert_bundle is None:
+        cert_pem, key_pem, pin_sha256 = generate_self_signed_cert_bundle("bing.com")
+    else:
+        cert_pem, key_pem, pin_sha256 = cert_bundle
+
+    config = f"""listen: :{port}
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+auth:
+  type: userpass
+  userpass:
+    primary: {json.dumps(password)}
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com/
+    rewriteHost: true
+bandwidth:
+  up: 100 mbps
+  down: 500 mbps
+"""
+    if socks_port is not None:
+        config += f"""outbounds:
+  - name: chain
+    type: socks5
+    socks5:
+      addr: 127.0.0.1:{socks_port}
+"""
+    network = '    network_mode: host\n' if host_network else f'    ports:\n      - "{port}:{port}/udp"\n'
+    compose = f"""  {service}:
+    image: hoplyra-hysteria2:1
+    container_name: {container}
+    restart: unless-stopped
+{network}    volumes:
+      - {json.dumps(path + ":/etc/hysteria")}
+"""
+    uri = f"hysteria2://primary%3A{password}@{endpoint_host(host)}:{port}/?insecure=1&sni=bing.com&pinSHA256={pin_sha256}#Hoplyra-HY2"
+    # The comment keeps the file valid client YAML, while exposing the import URI.
+    client = f"""# {uri}
+# Self-signed TLS with SHA-256 certificate pinning for server authenticity.
+server: {json.dumps(f"{endpoint_host(host)}:{port}")}
+auth: {json.dumps("primary:" + password)}
+tls:
+  sni: bing.com
+  insecure: true
+  pinSHA256: {pin_sha256}
+socks5:
+  listen: 127.0.0.1:1080
+"""
+    meta = {
+        "port": port,
+        "listenPort": port,
+        "password": password,
+        "username": "primary",
+        "sni": "bing.com",
+        "pinSHA256": pin_sha256,
+        "protocol": "hysteria2",
+    }
+    return config, compose, client, meta, (cert_pem, key_pem)
+
+
+class Hysteria2Deployer(ProtocolDeployer):
+    protocol = "hysteria2"
+    listen_port = 443
+
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        path = _instance_dir(config_id, runner.target.is_local)
+        container = f"cv-hy2-{config_id[:8]}"
+        port = (kwargs.get("resources") or {}).get("listenPort") or find_hysteria2_port(runner, self.listen_port)
+        config, service, client, meta, (cert_pem, key_pem) = hysteria2_bundle(path, container, server_host, port)
+        mkdir_remote(runner, path)
+        ensure_image(runner, "hoplyra-hysteria2:1", "hysteria2")
+        runner.upload_text(f"{path}/server.crt", cert_pem, 0o644)
+        runner.upload_text(f"{path}/server.key", key_pem, 0o600)
+        runner.upload_text(f"{path}/config.yaml", config, 0o600)
+        runner.upload_text(f"{path}/docker-compose.yml", "services:\n" + service)
+        podman_compose_up(runner, path, self.compose_project(config_id))
+        return DeployResult(client, container, path, meta)
+
 DEPLOYERS: dict[str, ProtocolDeployer] = {
     "wg": WireGuardDeployer(),
+    "hysteria2": Hysteria2Deployer(),
     "awg": AmneziaWGDeployer(),
     "xray": XrayDeployer(),
 }

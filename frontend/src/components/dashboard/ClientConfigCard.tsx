@@ -105,7 +105,8 @@ export function ClientConfigCard({
     (config.protocol === 'awg' ||
       config.protocol === 'wg' ||
       config.protocol === 'xray' ||
-      config.protocol === 'openvpn')
+      config.protocol === 'openvpn' ||
+      config.protocol === 'hysteria2')
 
   const [peers, setPeers] = useState<api.ConfigPeer[]>([])
   const [loadingPeers, setLoadingPeers] = useState(false)
@@ -388,7 +389,9 @@ export function ClientConfigCard({
                           </span>
                         </div>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-text-muted font-mono">
-                          <span>{peer.clientIp}</span>
+                          {peer.clientIp && !peer.clientIp.startsWith('peer_') && !peer.clientIp.startsWith('UUID ') && (
+                            <span>{peer.clientIp}</span>
+                          )}
                           {hasStats && (peer.rxBytes != null || peer.txBytes != null) ? (
                             <span className="text-zinc-300 font-medium">
                               ↓ {formatBytes(peer.rxBytes ?? 0)} · ↑ {formatBytes(peer.txBytes ?? 0)}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hoplyra.container_images import ensure_image
 from hoplyra.hosts import endpoint_host
 
 import json
@@ -135,6 +136,8 @@ def _compose_project_at(config_id: str, workdir: str) -> str:
 
 
 def _ensure_compose_images(runner: RemoteRunner, compose: str) -> None:
+    if "hoplyra-hysteria2:1" in compose:
+        ensure_image(runner, "hoplyra-hysteria2:1", "hysteria2")
     if "hoplyra-wg:2" in compose:
         ensure_wg_image(runner)
     if "hoplyra-xray:1" in compose:
@@ -722,6 +725,13 @@ Log err file /dev/null
             )
             runner.upload_text(f"{path}/wg0.conf", wg_conf, 0o600)
             services.append(wg_svc)
+        elif entry.protocol == "hysteria2":
+            client_conf, hy_services, hy_files, bypass_meta = self._hysteria2_entry_bundle(
+                runner, path, config_id, entry, downstream, local_tor
+            )
+            for name, content, mode in hy_files:
+                runner.upload_text(f"{path}/{name}", content, mode)
+            services.extend(hy_services)
         elif entry.protocol == "xray":
             client_conf, xray_svc, xray_files, hop_bypass_meta = self._xray_entry_bundle(
                 path,
@@ -1159,6 +1169,13 @@ Log err file /dev/null
             for name, content, mode in entry_files:
                 runner.upload_text(f"{path}/{name}", content, mode)
             services.insert(0, entry_svc)
+        elif entry.protocol == "hysteria2":
+            client_conf, hy_services, hy_files, bypass_meta = self._hysteria2_entry_bundle(
+                runner, path, config_id, entry, downstream, local_tor
+            )
+            for name, content, mode in hy_files:
+                runner.upload_text(f"{path}/{name}", content, mode)
+            services.extend(hy_services)
         elif entry.protocol == "xray":
             client_conf, xray_svc, xray_files, hop_bypass_meta = self._xray_entry_bundle(
                 path, config_id, plan.entry, downstream, local_tor
@@ -1510,6 +1527,43 @@ PersistentKeepalive = 15
         _ensure_compose_images(runner, compose)
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return client_conf, path
+
+    def _hysteria2_entry_bundle(
+        self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec,
+        downstream: ExitEndpoint | None, local_tor: bool,
+    ) -> tuple[str, list[str], list[tuple[str, str, int]], dict[str, Any]]:
+        from hoplyra.protocols import hysteria2_bundle, find_hysteria2_port
+
+        # Host networking allows a loopback-only SOCKS bridge to reuse the
+        # existing chain routing, including Tor UDP blocking (no direct leak).
+        port = find_hysteria2_port(runner, 443)
+        bridge_port = self._listener_port(XRAY_ENTRY_PORT)
+        config, service, client, meta, (cert_pem, key_pem) = hysteria2_bundle(
+            path, f"cv-hy2-entry-{self._resource_tag(config_id)}", hop.server_host, port,
+            host_network=True, socks_port=bridge_port if downstream else None,
+        )
+        services = [service]
+        files = [
+            ("server.crt", cert_pem, 0o644),
+            ("server.key", key_pem, 0o600),
+            ("config.yaml", config, 0o600),
+        ]
+        if downstream:
+            via_tor = bool(local_tor or downstream.direct)
+            bridge = self._xray_chain_config(downstream, via_tor=via_tor, entry_redirect=False)
+            bridge["inbounds"] = [{"tag": "hy2-in", "listen": "127.0.0.1", "port": bridge_port,
+                                   "protocol": "socks", "settings": {"auth": "noauth", "udp": True}}]
+            self._finalize_entry_chain_routing(bridge, downstream, inbound_tag="hy2-in", via_tor=via_tor)
+            files.append(("hy2-bridge.json", json.dumps(bridge, indent=2), 0o600))
+            services.append(compose_xray_service(
+                f"cv-hy2-bridge-{self._resource_tag(config_id)}", path,
+                service_name="hy2-bridge", config_file="hy2-bridge.json",
+            ))
+        if local_tor:
+            tor_service, tor_files = self._tor_sidecar_bundle(path, config_id)
+            services.append(tor_service)
+            files.extend(tor_files)
+        return client, services, files, meta
 
     def _xray_entry_bundle(
         self,

@@ -9,7 +9,8 @@ __pycache__/
 hoplyra.db
 *.db
 .pytest_cache/
-backend/tests/
+backend/tests/*
+!backend/tests/test_hysteria2.py
 backend/scripts/*
 !backend/scripts/bootstrap-env.sh
 !backend/scripts/generate-ssl.sh

@@ -45,7 +45,7 @@ function ClientConfigModalContent({
   const [routingMode, setRoutingMode] = useState<'all' | 'bypass-ru'>('all')
   const [qrPeerId, setQrPeerId] = useState<string | null>(null)
   const supportsPeers =
-    (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn') &&
+    (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn' || liveConfig.protocol === 'hysteria2') &&
     !liveConfig.hops?.length &&
     liveConfig.status === 'active' &&
     !liveConfig.id.startsWith('demo-')
@@ -361,7 +361,9 @@ function ClientConfigModalContent({
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="font-medium text-zinc-200 truncate">{p.name}</p>
-                        <p className="text-[11px] text-text-muted font-mono mt-0.5">{peerAddr}</p>
+                        {p.clientIp && !p.clientIp.startsWith('peer_') && !p.clientIp.startsWith('UUID ') && (
+                          <p className="text-[11px] text-text-muted font-mono mt-0.5 truncate">{peerAddr}</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {peerShareUri && routingMode !== 'bypass-ru' && (

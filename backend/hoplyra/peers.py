@@ -7,6 +7,8 @@ import json
 import logging
 import re
 import shlex
+import secrets
+from urllib.parse import quote, urlsplit, urlunsplit
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -198,6 +200,100 @@ def _remove_xray_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_uuid: str)
         raise RuntimeError(f"Не удалось удалить Xray-клиента: {err[:300]}")
 
 
+def _hysteria2_client(base: str, auth: str, name: str) -> str:
+    """Replace only client credentials and the URI fragment, preserving TLS settings."""
+    match = re.search(r"hysteria2://[^\s]+", base)
+    if not match:
+        raise ValueError("Hysteria 2 client URI missing")
+    uri = urlsplit(match.group())
+    endpoint = uri.netloc.rsplit("@", 1)[-1]
+    new_uri = urlunsplit((uri.scheme, f"{quote(auth, safe='')}@{endpoint}", uri.path, uri.query, quote(name, safe="")))
+    client = base.replace(match.group(), new_uri)
+    return re.sub(r"^auth:.*$", lambda _: f"auth: {json.dumps(auth)}", client, flags=re.MULTILINE)
+
+
+def _update_hysteria2_auth(cfg: dict[str, Any], runner: RemoteRunner, username: str,
+                          password: str, *, remove: bool = False) -> None:
+    # The deployer owns this top-level YAML block. JSON is a YAML subset and
+    # avoids requiring PyYAML on the remote host. Lock across read/write/restart.
+    path = cfg.get("instance_path") or f"/opt/hoplyra/instances/{cfg['id']}"
+    container = cfg.get("container_name") or f"cv-hy2-{cfg['id'][:8]}"
+    script = rf"""
+import fcntl, json, os, re, subprocess
+p = {path + '/config.yaml'!r}
+with open(p + '.lock', 'w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    original = open(p).read()
+    match = re.search(r'^auth:.*?(?=^\S|\Z)', original, re.M | re.S)
+    if not match:
+        raise RuntimeError('auth block missing')
+    block = match.group()
+    if block.startswith('auth: {{'):
+        auth = json.loads(block.split(':', 1)[1])
+    else:
+        kind = re.search(r'^  type: (\w+)', block, re.M)
+        if kind and kind.group(1) == 'password':
+            value = re.search(r'^  password: (.+)', block, re.M)
+            auth = {{'type': 'userpass', 'userpass': {{'primary': json.loads(value.group(1))}}}}
+        elif kind and kind.group(1) == 'userpass':
+            users = re.findall(r'^    ([a-zA-Z0-9_]+): (.+)$', block, re.M)
+            if not users:
+                raise RuntimeError('unsupported userpass format')
+            auth = {{'type': 'userpass', 'userpass': {{k: json.loads(v) for k, v in users}}}}
+        else:
+            raise RuntimeError('unsupported auth format')
+    if auth.get('type') != 'userpass':
+        raise RuntimeError('unsupported auth type')
+    users = auth['userpass']
+    username, password = {username!r}, {password!r}
+    if {remove!r}:
+        if users.get(username) != password:
+            raise RuntimeError('peer credentials do not match')
+        del users[username]
+    else:
+        if username in users:
+            raise RuntimeError('peer already exists')
+        users[username] = password
+    updated = original[:match.start()] + 'auth: ' + json.dumps(auth) + '\n' + original[match.end():]
+    def write(content):
+        with open(p + '.new', 'w') as out:
+            os.chmod(p + '.new', 0o600)
+            out.write(content)
+        os.replace(p + '.new', p)
+    write(updated)
+    def _restart():
+        for bin_name in ('podman', 'docker'):
+            try:
+                res = subprocess.run([bin_name, 'restart', {container!r}], capture_output=True)
+                if res.returncode == 0:
+                    return 0
+            except FileNotFoundError:
+                continue
+        return 1
+    if _restart() != 0:
+        write(original)
+        _restart()
+        raise RuntimeError('container restart failed')
+"""
+    code, out, err = runner.run(f"python3 -c {shlex.quote(script)}", timeout=60)
+    if code != 0:
+        cleaned_err = re.sub(r'password.*', '[REDACTED]', err or out, flags=re.I)
+        cleaned_err = cleaned_err.replace(password, '[REDACTED]')
+        raise RuntimeError(f"Не удалось обновить Hysteria 2-клиента: {cleaned_err}")
+
+
+def _create_hysteria2_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_name: str) -> tuple[str, str]:
+    username = f"peer_{uuid.uuid4().hex}"
+    password = secrets.token_urlsafe(24)
+    client = _hysteria2_client(cfg.get("client_config") or "", f"{username}:{password}", peer_name)
+    _update_hysteria2_auth(cfg, runner, username, password)
+    return username, client
+
+
+def _remove_hysteria2_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_id: str, password: str) -> None:
+    _update_hysteria2_auth(cfg, runner, peer_id, password, remove=True)
+
+
 def _create_openvpn_peer(cfg: dict[str, Any], runner: RemoteRunner, cn: str) -> tuple[str, str]:
     quote = shlex.quote
     container = cfg.get("container_name") or f"cv-openvpn-{cfg['id'][:8]}"
@@ -267,7 +363,7 @@ def get_peer_stats(cfg: dict[str, Any], runner: RemoteRunner) -> dict[str, dict[
     }
     """
     protocol = cfg["protocol"]
-    if protocol not in ("awg", "wg", "xray", "openvpn"):
+    if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2"):
         return {}
 
     stats: dict[str, dict[str, Any]] = {}
@@ -390,7 +486,7 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
         if cfg["status"] != "active":
             raise RuntimeError("Конфигурация не активна")
         protocol = cfg["protocol"]
-        if protocol not in ("awg", "wg", "xray", "openvpn"):
+        if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2"):
             raise ValueError("Multi-peer не поддерживается для этого протокола")
         used = {
             r["client_ip"]
@@ -413,6 +509,22 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
         pub_key, client_conf = _create_xray_peer(cfg, runner, str(uuid.uuid4()))
         psk = ""
         client_ip = f"UUID {pub_key[:8]}"
+    elif protocol == "hysteria2":
+        if not meta.get("username") and not meta.get("password"):
+            raise ValueError("Hysteria 2 primary password missing")
+        pub_key, client_conf = _create_hysteria2_peer(cfg, runner, name.strip())
+        psk = json.loads(re.search(r"^auth: (.+)$", client_conf, re.MULTILINE).group(1)).split(":", 1)[1]
+        client_ip = pub_key
+        if not meta.get("username"):
+            primary_password = meta.get("password")
+            if not primary_password:
+                raise ValueError("Hysteria 2 primary password missing")
+            cfg["client_config"] = _hysteria2_client(cfg["client_config"], f"primary:{primary_password}", "Hoplyra-HY2")
+            meta["username"] = "primary"
+            with connect() as conn:
+                conn.execute("UPDATE configs SET client_config = ?, meta_json = ? WHERE id = ?",
+                             (cfg["client_config"], json.dumps(meta), config_id))
+                conn.commit()
     else:
         pub_key, client_conf = _create_openvpn_peer(cfg, runner, f"peer_{peer_id[:8]}")
         psk = ""
@@ -458,6 +570,8 @@ def revoke_peer(config_id: str, peer_id: str, runner: RemoteRunner) -> None:
         _remove_xray_peer(cfg, runner, peer_row["public_key"])
     elif protocol == "openvpn":
         _remove_openvpn_peer(cfg, runner, peer_row["public_key"])
+    elif protocol == "hysteria2":
+        _remove_hysteria2_peer(cfg, runner, peer_row["public_key"], peer_row["preshared_key"])
     with connect() as conn:
         conn.execute(
             "UPDATE config_peers SET revoked_at = ? WHERE id = ?",

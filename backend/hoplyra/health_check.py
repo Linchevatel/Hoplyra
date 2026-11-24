@@ -50,10 +50,11 @@ def check_runtime(cfg, runner):
         if any(timestamps):
             return "alive", "Interface up, port listening (clients idle)"
         return "alive", "Interface up, port listening (no clients yet)"
-    if protocol not in ("xray", "openvpn", "tor"):
+    if protocol not in ("xray", "openvpn", "tor", "hysteria2"):
         return "degraded", "Unsupported health probe"
-    container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
-    code, out, _ = runner.run("podman ps --format '{{.Names}}'", timeout=20, retries=1)
+    container_protocol = "hy2" if protocol == "hysteria2" else protocol
+    container = cfg.get("container_name") or f"cv-{container_protocol}-{cfg['id'][:8]}"
+    code, out, _ = runner.run("podman ps --format '{{.Names}}' 2>/dev/null || docker ps --format '{{.Names}}' 2>/dev/null", timeout=20, retries=1)
     if code or container not in out.splitlines():
         return "down", "VPN container is not running"
     port = meta.get("listenPort") or (9050 if protocol == "tor" else None)

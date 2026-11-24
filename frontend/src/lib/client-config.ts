@@ -8,7 +8,7 @@ export interface ClientConfigBundle {
   /** Что кодировать в QR — ссылка импорта или файл */
   qrPayload: string
   shareLink?: {
-    scheme: 'vpn' | 'vless'
+    scheme: 'vpn' | 'vless' | 'hysteria2' | 'tuic'
     uri: string
   }
   isChainEntry: boolean
@@ -23,7 +23,7 @@ function mockUuidFromId(id: string): string {
 /** Keys/certs come from the backend — never synthesize client material for these. */
 export function configRequiresServerSecrets(config: VpnConfig): boolean {
   if (config.protocol === 'xray' && config.xrayBypass) return true
-  return config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'openvpn'
+  return config.protocol === 'hysteria2' || config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'openvpn'
 }
 
 export function extractVlessUri(clientConfig?: string): string | undefined {
@@ -193,9 +193,9 @@ export function buildClientConfigBundle(
   }
 
   if (config.protocol === 'hysteria2' || config.protocol === 'tuic') {
-    const uri = fileConfig.trim()
-    if (uri.startsWith('hysteria2://') || uri.startsWith('tuic://')) {
-      bundle.shareLink = { scheme: 'vless', uri }
+    const uri = fileConfig.match(/(?:hysteria2|tuic):\/\/[^\s]+/)?.[0]
+    if (uri) {
+      bundle.shareLink = { scheme: config.protocol, uri }
       bundle.qrPayload = uri
     }
   }
@@ -225,7 +225,7 @@ export function canShowClientConfig(config: VpnConfig): boolean {
 export function configFilename(protocol: Protocol, serverName: string, isChain?: boolean): string {
   const safe = serverName.replace(/\s+/g, '-').toLowerCase()
   const prefix = isChain ? 'chain-entry-' : ''
-  const ext = protocol === 'xray' ? 'json' : protocol === 'openvpn' ? 'ovpn' : 'conf'
+  const ext = protocol === 'hysteria2' ? 'yaml' : protocol === 'xray' ? 'json' : protocol === 'openvpn' ? 'ovpn' : 'conf'
   const proto = protocol === 'openvpn' ? 'openvpn' : protocol
   return `hoplyra-${proto}-${prefix}${safe}.${ext}`
 }
