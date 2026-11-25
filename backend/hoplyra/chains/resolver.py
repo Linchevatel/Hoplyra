@@ -130,8 +130,6 @@ def entry_needs_gateway(plan: ChainPlan, downstream: bool, local_tor: bool) -> b
     entry = plan.entry.protocol
     if entry in ("xray", "hysteria2"):
         return False
-    if needs_wg_link(plan):
-        return False
     if local_tor:
         return True
     return downstream and entry in ("awg", "wg", "openvpn")

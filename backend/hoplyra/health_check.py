@@ -25,13 +25,29 @@ def check_runtime(cfg, runner):
         # fallback for configs deployed before interface metadata existed.
         interface = meta.get("interface") or f"{'awg' if protocol == 'awg' else 'wg'}_{cfg['id'][:8]}"
         tool = "awg" if protocol == "awg" else "wg"
-        prefix = ""
-        # WG runs inside its own network namespace/container.
-        if protocol == "wg":
-            container = cfg.get("container_name") or f"cv-wg-{cfg['id'][:8]}"
-            prefix = f"podman exec {quote(container)} "
-        code, out, _ = runner.run(
-            f"{prefix}{tool} show {quote(interface)} listen-port", timeout=20, retries=1)
+        # WG and containerized AWG run inside their container with net=host
+        is_host_awg = meta.get("hostAwg", True if protocol == "awg" else False)
+        is_container = protocol == "wg" or (protocol == "awg" and not is_host_awg)
+        container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
+        q_cont = quote(container)
+        q_if = quote(interface)
+
+        if is_container:
+            cmd_listen = (
+                f"if command -v podman >/dev/null 2>&1; then "
+                f"podman exec {q_cont} {tool} show {q_if} listen-port; "
+                f"else docker exec {q_cont} {tool} show {q_if} listen-port; fi"
+            )
+            cmd_handshake = (
+                f"if command -v podman >/dev/null 2>&1; then "
+                f"podman exec {q_cont} {tool} show {q_if} latest-handshakes; "
+                f"else docker exec {q_cont} {tool} show {q_if} latest-handshakes; fi"
+            )
+        else:
+            cmd_listen = f"{tool} show {q_if} listen-port"
+            cmd_handshake = f"{tool} show {q_if} latest-handshakes"
+
+        code, out, _ = runner.run(cmd_listen, timeout=20, retries=1)
         if code or not out.strip().isdigit():
             return "down", "VPN interface unavailable"
         port = out.strip()
@@ -39,8 +55,7 @@ def check_runtime(cfg, runner):
             f"ss -H -lun 'sport = :{quote(port)}' | grep -q .", timeout=20, retries=1)
         if code:
             return "degraded", "VPN listen port is not bound"
-        code, out, _ = runner.run(
-            f"{prefix}{tool} show {quote(interface)} latest-handshakes", timeout=20, retries=1)
+        code, out, _ = runner.run(cmd_handshake, timeout=20, retries=1)
         if code:
             return "alive", "Interface up, port listening"
         timestamps = [int(line.split()[-1]) for line in out.splitlines() if line.split() and line.split()[-1].isdigit()]

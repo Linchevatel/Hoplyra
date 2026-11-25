@@ -24,16 +24,18 @@ def compose_xray_service(
     config_file: str = "config.json",
     tls_cn: str | None = None,
     depends_on: str | None = None,
+    net_admin: bool = False,
 ) -> str:
     env = f'      - XRAY_CONFIG={XRAY_MOUNT}/{config_file}\n'
     if tls_cn:
         env += f'      - TLS_CN={tls_cn}\n'
     depends = f"\n    depends_on: [{depends_on}]" if depends_on else ""
+    caps = "    cap_add: [NET_ADMIN]\n" if net_admin else ""
     return f"""  {service_name}:
     image: {XRAY_IMAGE}
     container_name: {container_name}
     network_mode: host
-    environment:
+{caps}    environment:
 {env.rstrip()}
     volumes:
       - {host_path}:{XRAY_MOUNT}

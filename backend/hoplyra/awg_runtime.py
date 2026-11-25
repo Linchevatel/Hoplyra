@@ -16,7 +16,36 @@ from hoplyra.awg_params import (
     parse_awg_params_from_conf,
 )
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
+from hoplyra.container_images import ensure_image
 from hoplyra.wg_keys import generate_wg_psk
+
+AWG_IMAGE = "hoplyra-awg:1"
+AWG_CONF_IN_CONTAINER = "/etc/amnezia/amneziawg/awg0.conf"
+
+def ensure_awg_image(runner: RemoteRunner) -> None:
+    ensure_image(runner, AWG_IMAGE, "awg")
+
+
+def compose_awg_service(
+    container_name: str,
+    host_conf_path: str,
+    *,
+    service_name: str = "awg",
+    interface: str = "awg0",
+) -> str:
+    conf = f"/etc/amnezia/amneziawg/{interface}.conf"
+    return f"""  {service_name}:
+    image: {AWG_IMAGE}
+    container_name: {container_name}
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    environment:
+      AWG_CONF: {conf}
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - {host_conf_path}:{conf}:ro
+    restart: unless-stopped"""
 
 AWG_READY_MARKER = "/opt/hoplyra/.awg-ready"
 CHAINVAULT_AWG_MARKER = "/opt/chainvault/.awg-ready"
@@ -224,12 +253,39 @@ def awg_quick_up(runner: RemoteRunner, conf_path: str) -> None:
 def awg_quick_down(runner: RemoteRunner, conf_path: str) -> None:
     # Removing the link also releases its UDP socket if the conf vanished or
     # awg-quick failed. Interface names are the conf basename (awg-quick rule).
+    # Prefer the native teardown (it runs PostDown itself); only when the link
+    # survives (host without awg-quick, containerized AWG) run the conf's
+    # PostDown lines manually (%i substituted) and delete the link, otherwise
+    # PostUp-created ip rules/routes/iptables would leak.
     conf_q = shlex.quote(conf_path)
-    iface_q = shlex.quote(conf_path.rsplit("/", 1)[-1].removesuffix(".conf"))
+    iface = conf_path.rsplit("/", 1)[-1].removesuffix(".conf")
+    iface_q = shlex.quote(iface)
     runner.run(
-        f"awg-quick down {conf_q} 2>/dev/null || "
-        f"ip link delete {iface_q} 2>/dev/null || true",
+        f"if ip link show {iface_q} >/dev/null 2>&1; then "
+        f"awg-quick down {conf_q} 2>/dev/null || true; fi; "
+        f"if ip link show {iface_q} >/dev/null 2>&1; then "
+        f"sed -n 's/^PostDown[[:space:]]*=[[:space:]]*//p' {conf_q} 2>/dev/null | "
+        f"sed 's|%i|{iface}|g' | bash 2>/dev/null || true; "
+        f"ip link delete {iface_q} 2>/dev/null || true; fi; true",
         timeout=60,
+    )
+
+
+LINK_RESERVATIONS_DIR = "/opt/hoplyra/link-reservations"
+
+
+def release_link_reservations(runner: RemoteRunner, config_id: str) -> None:
+    """Drop this config's exit-link table reservations after an ownership check.
+
+    Reservations are host-side state written after the link is up; PostDown
+    runs inside the container (private fs) and cannot release them, so the
+    host releases them on stop/delete/rollback.
+    """
+    runner.run(
+        f"for f in {LINK_RESERVATIONS_DIR}/*; do "
+        f"[ -f \"$f\" ] && [ \"$(cat \"$f\" 2>/dev/null)\" = {shlex.quote(config_id)} ] && rm -f \"$f\"; "
+        "done 2>/dev/null || true",
+        timeout=30,
     )
 
 

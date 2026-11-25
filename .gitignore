@@ -11,6 +11,11 @@ hoplyra.db
 .pytest_cache/
 backend/tests/*
 !backend/tests/test_hysteria2.py
+!backend/tests/test_chain_exit_link.py
+!backend/tests/test_chain_combinations.py
+!backend/tests/test_chain_failure_recovery.py
+!backend/tests/test_chain_repeated_visits.py
+!backend/tests/test_config_lifecycle.py
 backend/scripts/*
 !backend/scripts/bootstrap-env.sh
 !backend/scripts/generate-ssl.sh
@@ -26,3 +31,6 @@ QUESTIONS.md
 .pi/
 .qwen/
 skills-lock.json
+
+# agent tooling
+skills/

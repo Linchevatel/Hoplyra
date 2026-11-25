@@ -18,7 +18,7 @@ from hoplyra.wg_keys import generate_wg_keypair, generate_wg_psk
 from hoplyra.wg_runtime import compose_wg_service, ensure_wg_image
 from hoplyra.xray_bypass import format_bypass_client_bundle
 from hoplyra.xray_runtime import XRAY_MOUNT, compose_xray_service, ensure_xray_image, tls_cert_paths
-from hoplyra.awg_runtime import awg_quick_down, awg_quick_up, ensure_awg_on_host
+from hoplyra.awg_runtime import awg_quick_down, awg_quick_up, compose_awg_service, ensure_awg_image, ensure_awg_on_host
 from hoplyra.awg_params import (
     AwgObfuscationParams,
     build_awg_client_conf,
@@ -240,13 +240,15 @@ class AmneziaWGDeployer(ProtocolDeployer):
         )
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-awg-{config_id[:8]}"
-        conf_name = f"awg_{config_id[:8]}.conf"
+        interface = f"awg_{config_id[:8]}"
+        conf_name = f"{interface}.conf"
         conf_path = f"{path}/{conf_name}"
         def cleanup(*, remove_dir: bool) -> None:
-            # Independently attempt all actions without masking the deploy error.
+            # Clean up both container and any host link
             commands = [
+                f"podman rm -f {shlex.quote(container)} 2>/dev/null || docker rm -f {shlex.quote(container)} 2>/dev/null || true",
                 f"awg-quick down {shlex.quote(conf_path)} 2>/dev/null || true",
-                f"ip link delete {shlex.quote(conf_name[:-5])} 2>/dev/null || true",
+                f"ip link delete {shlex.quote(interface)} 2>/dev/null || true",
             ]
             if remove_dir:
                 commands.append(f"rm -rf -- {shlex.quote(path)}")
@@ -258,24 +260,59 @@ class AmneziaWGDeployer(ProtocolDeployer):
 
         try:
             mkdir_remote(runner, path)
-            runner.upload_text(conf_path, awg_conf, 0o600)
-            ensure_awg_on_host(runner)
-            try:
-                awg_quick_up(runner, conf_path)
-            except RuntimeError:
-                cleanup(remove_dir=False)
-                # Only retry if another listener has occupied the failed port.
-                if _find_free_udp_port(runner, port) == port:
-                    raise
-                new_port = _find_free_udp_port(runner, port + 1)
-                awg_conf = awg_conf.replace(f"ListenPort = {port}", f"ListenPort = {new_port}")
-                client_conf = client_conf.replace(
-                    f"Endpoint = {endpoint_host(server_host)}:{port}",
-                    f"Endpoint = {endpoint_host(server_host)}:{new_port}",
-                )
-                port = new_port
+
+            # 1. First probe if the kernel module is available on the system
+            c_probe, _, _ = runner.run("modprobe amneziawg 2>/dev/null && echo ok")
+            if c_probe == 0:
+                try:
+                    ensure_awg_on_host(runner)
+                except Exception:
+                    pass
+
+            c_mod, _, _ = runner.run("modprobe amneziawg 2>/dev/null && command -v awg-quick >/dev/null && echo ok")
+            use_host_kernel = (c_mod == 0)
+
+            if use_host_kernel:
                 runner.upload_text(conf_path, awg_conf, 0o600)
-                awg_quick_up(runner, conf_path)
+                try:
+                    awg_quick_up(runner, conf_path)
+                except RuntimeError:
+                    cleanup(remove_dir=False)
+                    # Only retry if another listener has occupied the failed port.
+                    if _find_free_udp_port(runner, port) == port:
+                        raise
+                    new_port = _find_free_udp_port(runner, port + 1)
+                    awg_conf = awg_conf.replace(f"ListenPort = {port}", f"ListenPort = {new_port}")
+                    client_conf = client_conf.replace(
+                        f"Endpoint = {endpoint_host(server_host)}:{port}",
+                        f"Endpoint = {endpoint_host(server_host)}:{new_port}",
+                    )
+                    port = new_port
+                    runner.upload_text(conf_path, awg_conf, 0o600)
+                    awg_quick_up(runner, conf_path)
+            else:
+                # Always in container via hoplyra-awg:1
+                compose = f"services:\n{compose_awg_service(container, conf_path, interface=interface)}\n"
+                runner.upload_text(f"{path}/docker-compose.yml", compose)
+                runner.upload_text(conf_path, awg_conf, 0o600)
+                ensure_awg_image(runner)
+                try:
+                    podman_compose_up(runner, path, self.compose_project(config_id))
+                except RuntimeError:
+                    cleanup(remove_dir=False)
+                    if _find_free_udp_port(runner, port) == port:
+                        raise
+                    new_port = _find_free_udp_port(runner, port + 1)
+                    awg_conf = awg_conf.replace(f"ListenPort = {port}", f"ListenPort = {new_port}")
+                    client_conf = client_conf.replace(
+                        f"Endpoint = {endpoint_host(server_host)}:{port}",
+                        f"Endpoint = {endpoint_host(server_host)}:{new_port}",
+                    )
+                    port = new_port
+                    compose = f"services:\n{compose_awg_service(container, conf_path, interface=interface)}\n"
+                    runner.upload_text(f"{path}/docker-compose.yml", compose)
+                    runner.upload_text(conf_path, awg_conf, 0o600)
+                    podman_compose_up(runner, path, self.compose_project(config_id))
         except Exception:
             cleanup(remove_dir=True)
             raise
@@ -286,8 +323,8 @@ class AmneziaWGDeployer(ProtocolDeployer):
             meta={
                 "serverPublicKey": server_pub,
                 "listenPort": port,
-                "hostAwg": True,
-                "interface": conf_name[:-5],
+                "hostAwg": use_host_kernel,
+                "interface": interface,
                 "subnet": subnet,
                 "awgVersion": ver_label,
                 "awgParams": awg.as_meta(),
@@ -303,10 +340,17 @@ class AmneziaWGDeployer(ProtocolDeployer):
         )
 
     def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
+        container = f"cv-awg-{config_id[:8]}"
         conf_name = f"awg_{config_id[:8]}.conf"
-        awg_quick_down(runner, f"{instance_path}/{conf_name}")
-        awg_quick_down(runner, f"{instance_path}/awg0.conf")
-        runner.run(f"ip link delete awg_{config_id[:8]} 2>/dev/null || true; ip link delete awg_{config_id.replace('-', '')[:12]} 2>/dev/null || true", timeout=30)
+        podman_compose_down(runner, instance_path, self.compose_project(config_id), timeout=30)
+        runner.run(
+            f"podman rm -f {shlex.quote(container)} 2>/dev/null || docker rm -f {shlex.quote(container)} 2>/dev/null || true; "
+            f"awg-quick down {shlex.quote(instance_path)}/{conf_name} 2>/dev/null || true; "
+            f"awg-quick down {shlex.quote(instance_path)}/awg0.conf 2>/dev/null || true; "
+            f"ip link delete {shlex.quote(conf_name[:-5])} 2>/dev/null || true; "
+            f"ip link delete awg_{config_id.replace('-', '')[:12]} 2>/dev/null || true",
+            timeout=30,
+        )
         runner.run(f"rm -rf {instance_path}")
 
 

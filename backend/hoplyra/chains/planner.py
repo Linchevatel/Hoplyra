@@ -26,6 +26,10 @@ class ExitEndpoint:
     via_tor: bool = False
     direct: bool = False
     tor_dynamic_exit: bool = False
+    link_client_conf: str | None = None
+    link_protocol: str | None = None
+    link_mark: int = 0
+    link_table: int = 0
 
 
 @dataclass
@@ -50,6 +54,14 @@ def validate_chain(hops: list[dict[str, Any]]) -> None:
                 raise ValueError(
                     f"Звенья {i + 1} и {i + 2} на одном VPS — разрешено только если одно из них Tor"
                 )
+    if (len(hops) >= 2
+            and all(h["serverId"] == hops[0]["serverId"] for h in hops)
+            and hops[0]["protocol"] == hops[-1]["protocol"]
+            and hops[0]["protocol"] in ("awg", "wg")):
+        raise ValueError(
+            f"Цепь {hops[0]['protocol']}→…→{hops[-1]['protocol']} на одном VPS не поддерживается: "
+            "входное и выходное звенья делят интерфейс, подсеть и порт — используйте разные серверы"
+        )
 
     # Non-adjacent visits need independent host-network resources. VPN and
     # repeated Tor roles still own fixed interfaces/transparent-proxy ports.

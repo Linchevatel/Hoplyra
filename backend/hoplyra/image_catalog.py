@@ -13,6 +13,7 @@ HOPYLRA_IMAGES: tuple[tuple[str, str], ...] = (
     ("hoplyra-openvpn:5", "openvpn"),
     ("hoplyra-socks:1", "socks"),
     ("hoplyra-hysteria2:1", "hysteria2"),
+    ("hoplyra-awg:1", "awg"),
 )
 
 

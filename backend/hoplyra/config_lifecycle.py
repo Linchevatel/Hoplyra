@@ -87,6 +87,8 @@ def stop_remote_config(
                     # exclusive host; otherwise ownership cannot be established.
                     runner.run("ip link delete awg0 2>/dev/null || true", timeout=60)
                 _run_chain_compose(runner, root, action="down")
+                from hoplyra.awg_runtime import release_link_reservations
+                release_link_reservations(runner, config_id)
                 if purge:
                     purge_host_artifacts(runner, config_id, chain=True)
                     root_q = shlex.quote(root)

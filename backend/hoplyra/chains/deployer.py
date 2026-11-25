@@ -3,6 +3,7 @@ from __future__ import annotations
 from hoplyra.container_images import ensure_image
 from hoplyra.hosts import endpoint_host
 
+import hashlib
 import json
 import re
 import secrets
@@ -28,7 +29,7 @@ from hoplyra.awg_params import (
     generate_awg2_params,
     generate_awg_params,
 )
-from hoplyra.awg_runtime import awg_quick_up, ensure_awg_on_host
+from hoplyra.awg_runtime import awg_quick_up, ensure_awg_on_host, compose_awg_service, ensure_awg_image
 from hoplyra.amnezia_export import build_amnezia_awg_vpn_uri
 from hoplyra.wg_keys import generate_wg_psk
 from hoplyra.openvpn_runtime import (
@@ -120,6 +121,16 @@ def _chain_tag(config_id: str) -> str:
     return tail[:8] if len(tail) >= 8 else config_id.replace("-", "")[:8]
 
 
+def _link_net(config_id: str) -> tuple[str, int, int]:
+    """Per-chain exit-link resources: interface suffix, routing table, fwmark.
+
+    Deterministic per config_id so redeploys are stable; distinct chains on one
+    host get distinct tables/marks/interfaces (collision odds ~1/4096 per pair).
+    """
+    n = int(hashlib.sha256(_chain_tag(config_id).encode()).hexdigest()[:6], 16) % 4096
+    return f"{n:x}", 1000 + (n % 4000), 0x1000 + n
+
+
 def _host_path_suffix(runner: RemoteRunner, prefix: str) -> str:
     return f"/{prefix}-{safe_path_suffix(runner.target.host)}"
 
@@ -136,6 +147,8 @@ def _compose_project_at(config_id: str, workdir: str) -> str:
 
 
 def _ensure_compose_images(runner: RemoteRunner, compose: str) -> None:
+    if "hoplyra-awg:1" in compose:
+        ensure_awg_image(runner)
     if "hoplyra-hysteria2:1" in compose:
         ensure_image(runner, "hoplyra-hysteria2:1", "hysteria2")
     if "hoplyra-wg:2" in compose:
@@ -198,12 +211,14 @@ class ChainDeployer:
             and plan.entry.protocol == "awg"
             and plan.entry.server_id != plan.exit.server_id
         )
+        entry_awg_svc: str | None = None
         if entry_awg_prefetch:
             touch(plan.entry.server_id)
             entry_runner = runners[plan.entry.server_id]
             client_config, entry_path, hop_bypass_meta = self._deploy_entry_awg_only(
                 entry_runner, config_id, plan
             )
+            entry_awg_svc = hop_bypass_meta.pop("_awg_svc", None)
             bypass_meta.update(hop_bypass_meta)
             if hop_status:
                 hop_status.mark_done(plan.entry.id)
@@ -225,17 +240,8 @@ class ChainDeployer:
                     for hop in sorted(server_hops, key=lambda h: h.index):
                         hop_status.mark_done(hop.id)
             elif is_last and server_id == plan.entry.server_id:
-                if needs_wg_link(plan):
-                    touch(plan.entry.server_id)
-                    touch(plan.exit.server_id)
-                    self._deploy_wg_link(
-                        runners[plan.entry.server_id],
-                        runners[plan.exit.server_id],
-                        config_id,
-                        plan,
-                    )
                 if entry_awg_prefetch:
-                    _, entry_path, hop_bypass_meta = self._deploy_entry_compose(
+                    client_config, entry_path, hop_bypass_meta = self._deploy_entry_compose(
                         runner,
                         config_id,
                         plan,
@@ -243,6 +249,7 @@ class ChainDeployer:
                         downstream,
                         entry_path=entry_path,
                         client_conf=client_config,
+                        entry_awg_svc=entry_awg_svc,
                     )
                 else:
                     client_config, entry_path, hop_bypass_meta = self._deploy_entry_server(
@@ -265,11 +272,6 @@ class ChainDeployer:
                     for hop in sorted(server_hops, key=lambda h: h.index):
                         hop_status.mark_done(hop.id)
 
-        if needs_wg_link(plan):
-            touch(plan.entry.server_id)
-            touch(plan.exit.server_id)
-            self._apply_wg_link_forward(runners, plan)
-
         if not client_config:
             raise RuntimeError("Не удалось получить клиентский конфиг точки входа")
 
@@ -277,7 +279,7 @@ class ChainDeployer:
             client_config=client_config,
             instance_path=entry_path,
             container_name=entry_container,
-            meta=_chain_result_meta(plan, client_config, config_id=config_id),
+            meta=_chain_result_meta(plan, client_config, config_id=config_id, bypass_meta=bypass_meta),
             bypass_meta=bypass_meta or None,
         )
 
@@ -325,7 +327,7 @@ class ChainDeployer:
             if progress:
                 progress.mark_done(hop.id)
         return ChainDeployResult(client, path, container,
-                                 _chain_result_meta(plan, client, config_id=config_id),
+                                 _chain_result_meta(plan, client, config_id=config_id, bypass_meta=bypass_meta),
                                  bypass_meta or None)
 
     def _instance(self, runner: RemoteRunner, config_id: str, suffix: str = "") -> str:
@@ -360,8 +362,15 @@ class ChainDeployer:
         if exit_hop.protocol == "tor":
             return self._deploy_tor_exit(runner, path, config_id, exit_hop)
         if exit_hop.protocol in ("awg", "wg"):
-            self._deploy_nat_exit(runner, path, config_id, exit_hop)
-            return self._deploy_xray_socks_exit(runner, f"{path}/upstream", config_id, exit_hop)
+            endpoint, client_conf = self._deploy_nat_exit(
+                runner, path, config_id, exit_hop,
+                separate_awg_subnet=plan.entry.protocol == "awg" and not chain_has_tor(plan))
+            if chain_has_tor(plan):
+                return self._deploy_xray_socks_exit(runner, f"{path}/upstream", config_id, exit_hop)
+            endpoint.link_client_conf = client_conf
+            endpoint.link_protocol = exit_hop.protocol
+            _, endpoint.link_table, endpoint.link_mark = _link_net(config_id)
+            return endpoint
         if exit_hop.protocol == "openvpn":
             self._deploy_ovpn_exit(runner, path, config_id, exit_hop, plan)
             return self._deploy_xray_socks_exit(runner, f"{path}/upstream", config_id, exit_hop)
@@ -495,18 +504,221 @@ PersistentKeepalive = 15
         podman_compose_up(exit_runner, exit_path, f"{_compose_project(config_id)}-link-exit")
         podman_compose_up(entry_runner, entry_path, f"{_compose_project(config_id)}-link-entry")
 
-    def _deploy_nat_exit(self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec) -> ExitEndpoint:
-        if hop.protocol == "awg":
-            _, _, awg_conf = self._awg_entry_bundle(path, config_id, hop, "10.9.1.0/24")
-            conf_path = f"{path}/awg0.conf"
-            runner.upload_text(conf_path, awg_conf, 0o600)
+    def _awg_up_with_fallback(
+        self,
+        runner: RemoteRunner,
+        conf_path: str,
+        config_id: str,
+        path: str,
+        interface: str = "awg0",
+        service_name: str = "awg",
+    ) -> tuple[bool, str | None]:
+        """Attempt native host AWG first; return (use_host, opt_service_string) for container fallback."""
+        c_mod, _, _ = runner.run("modprobe amneziawg 2>/dev/null && command -v awg-quick >/dev/null && echo ok")
+        if c_mod == 0:
             ensure_awg_on_host(runner)
             awg_quick_up(runner, conf_path)
-            return ExitEndpoint(host=hop.server_host, port=55424)
+            return True, None
+
+        # Container fallback: return compose service definition to be bundled into the final docker-compose.yml
+        if service_name == "exit-link":
+            container = f"cv-awglink-{self._resource_tag(config_id)}"
+        elif service_name == "awg":
+            container = f"cv-awg-{config_id[:8]}"
+        else:
+            container = f"cv-{service_name}-{config_id[:8]}"
+        svc = compose_awg_service(container, conf_path, service_name=service_name, interface=interface)
+        return False, svc
+
+    def _deploy_exit_link(
+        self, runner: RemoteRunner, path: str, config_id: str,
+        downstream: ExitEndpoint, entry_if: str | None = None,
+    ) -> None:
+        """Consume the exit peer without installing a host-wide default route."""
+        ifsuffix, _, _ = _link_net(config_id)
+        base_n = int(ifsuffix, 16)
+        # Persistent ownership binding: a reservation file per table names the
+        # config that owns it. A candidate is "ours" ONLY by that file — never
+        # by heuristics on live rules. Any live rule/route/interface without
+        # our reservation is foreign and is never touched.
+        res_dir = "/opt/hoplyra/link-reservations"
+        chosen: tuple[str, int, int, str] | None = None
+        for step in range(16):
+            cand_n = (base_n + step) % 4096
+            cand_suffix = f"{cand_n:x}"
+            cand_table = 1000 + (cand_n % 4000)
+            cand_mark = 0x1000 + cand_n
+            cand_iface = (f"awglnk{cand_suffix}" if downstream.link_protocol == "awg"
+                          else f"wglnk{cand_suffix}")
+            res_file = f"{res_dir}/{cand_table}"
+            # Every probe step reports its own failure (M_FAIL_*); only a
+            # confirmed absence counts as free. A lost error must never be
+            # read as "resource available".
+            code, out, err = runner.run(
+                "command -v ip >/dev/null || { echo M_FAIL_IP; exit 1; }; "
+                f"echo M_RULE; ip -N -j -4 rule show 2>/dev/null || echo M_FAIL_RULE; "
+                f"echo M_ROUTE; o=$(ip -j -4 route show table {cand_table} 2>&1); rc=$?; "
+                "if [ $rc -eq 0 ]; then printf '%s\n' \"$o\"; "
+                "else case \"$o\" in *\"does not exist\"*) echo '[]';; *) echo M_FAIL_ROUTE;; esac; fi; "
+                f"echo M_IFACE; o=$(ip -j link show {cand_iface} 2>&1); rc=$?; "
+                "if [ $rc -eq 0 ]; then printf '%s\n' \"$o\"; "
+                "else case \"$o\" in *\"does not exist\"*) echo M_IFACE_ABSENT;; *) echo M_FAIL_IFACE;; esac; fi; "
+                f"echo M_RES; if [ -e {res_file} ]; then cat {res_file} 2>/dev/null || echo M_FAIL_RES; "
+                "else echo M_RES_ABSENT; fi; "
+                "echo M_END"
+            )
+            if code != 0 or "M_END" not in out or "M_FAIL" in out:
+                raise RuntimeError(
+                    f"Не удалось проверить сетевые ресурсы для exit-link (таблица {cand_table}): "
+                    f"{(err or out)[:200]}"
+                )
+
+            sections: dict[str, list[str]] = {}
+            cur: str | None = None
+            for ln in out.splitlines():
+                if ln in ("M_RULE", "M_ROUTE", "M_IFACE", "M_RES", "M_END"):
+                    cur = ln[2:]
+                    sections.setdefault(cur, [])
+                elif cur:
+                    sections[cur].append(ln)
+
+            def _json_section(name: str) -> Any:
+                text = "\n".join(sections.get(name, [])).strip()
+                try:
+                    return json.loads(text)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"Некорректный ответ проверки ресурсов ({name}) для exit-link"
+                    ) from exc
+
+            rules = _json_section("RULE")
+            routes_live = _json_section("ROUTE")
+            iface_lines = sections.get("IFACE", [])
+            iface_free = "M_IFACE_ABSENT" in iface_lines
+            res_lines = sections.get("RES", [])
+            owner = "" if "M_RES_ABSENT" in res_lines else "\n".join(res_lines).strip()
+
+            def _rule_conflicts(rule: dict) -> bool:
+                # Occupancy is decided by lookup table, by our priority AND by
+                # fwmark intersection (with the rule's mask) — never by a
+                # priority-only grep.
+                if str(rule.get("table") or rule.get("lookup") or "") == str(cand_table):
+                    return True
+                if rule.get("priority") == cand_table:
+                    return True
+                fm = rule.get("fwmark")
+                if fm is not None:
+                    try:
+                        fm_v = int(str(fm), 0)
+                        fmask_v = int(str(rule.get("fwmask", "0xffffffff")), 0)
+                    except ValueError:
+                        return True  # unparsable rule: stay safe
+                    if (cand_mark & fmask_v) == (fm_v & fmask_v):
+                        return True
+                return False
+
+            if owner == config_id:
+                # Redeploy: only our own expected entries may live in the table.
+                # An admin route (same prefix, other dev) must stop the deploy
+                # BEFORE the network is touched — never be silently replaced.
+                own_prefixes = ("0.0.0.0/1", "128.0.0.0/1") if entry_if else ("default",)
+                expected = {(p, cand_iface) for p in own_prefixes}
+                unexpected = [
+                    r for r in routes_live
+                    if isinstance(r, dict) and (r.get("dst", ""), r.get("dev", "")) not in expected
+                ] if isinstance(routes_live, list) else ["<unparsable>"]
+                if unexpected:
+                    raise RuntimeError(
+                        f"Таблица {cand_table} exit-link содержит чужие маршруты — "
+                        "сеть не изменена, разберитесь с ними вручную"
+                    )
+                chosen = (cand_suffix, cand_table, cand_mark, cand_iface)  # ours: reuse even with live iface
+                break
+            if owner:
+                continue  # reserved by another chain
+            if not isinstance(rules, list) or any(_rule_conflicts(r) for r in rules if isinstance(r, dict)):
+                continue  # foreign rule on our table/priority/mark
+            if not isinstance(routes_live, list):
+                raise RuntimeError("Некорректный ответ проверки маршрутов для exit-link")
+            if routes_live or not iface_free:
+                continue  # foreign live usage without a reservation: never touch
+            chosen = (cand_suffix, cand_table, cand_mark, cand_iface)
+            break
+        if chosen is None:
+            raise RuntimeError("Не удалось выделить свободную таблицу маршрутизации для exit-link")
+        ifsuffix, table, mark, interface = chosen
+        prio = table
+        downstream.link_table = table
+        downstream.link_mark = mark
+        path = f"{path}/exit-link"
+        mkdir_remote(runner, path)
+        conf = downstream.link_client_conf or ""
+        selector = f"iif {entry_if}" if entry_if else f"fwmark {mark:#x}"
+        prefixes = ("0.0.0.0/1", "128.0.0.0/1") if entry_if else ("default",)
+        # Point-to-point tunnel: plain dev routes, no shared main-table gateway route.
+        # `add` (not `replace`) after deleting exactly our own entries: a foreign
+        # same-prefix route fails the PostUp loudly instead of being overwritten.
+        routes = "; ".join(f"ip route add {prefix} dev %i table {table}" for prefix in prefixes)
+        # Cleanup removes exactly the rules/routes this link creates — never a table flush.
+        del_own = (f"ip rule del {selector} table {table} priority {prio} 2>/dev/null || true; "
+                   + "; ".join(f"ip route del {prefix} dev %i table {table} 2>/dev/null || true" for prefix in prefixes))
+        up = (f"sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true; "
+              f"{del_own}; "
+              f"ip rule add {selector} table {table} priority {prio}; {routes}; "
+              "iptables -t nat -C POSTROUTING -o %i -j MASQUERADE 2>/dev/null || "
+              "iptables -t nat -A POSTROUTING -o %i -j MASQUERADE")
+        down = (f"{del_own}; "
+                "iptables -t nat -D POSTROUTING -o %i -j MASQUERADE 2>/dev/null || true")
+        # The reservation file is host-side state: released by Hoplyra on host
+        # (stop/delete/rollback) after an ownership check — NOT from PostDown,
+        # which runs inside the container with a private filesystem.
+        if entry_if:
+            for direction in (f"-i {entry_if} -o %i", f"-i %i -o {entry_if}"):
+                up += f"; iptables -C FORWARD {direction} -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 {direction} -j ACCEPT"
+                down += f"; iptables -D FORWARD {direction} -j ACCEPT 2>/dev/null || true"
+        # DNS here would change the host resolver, not the forwarded client's DNS.
+        conf = re.sub(r"^(DNS|Table|PostUp|PostDown)\s*=.*\n?", "", conf, flags=re.MULTILINE)
+        conf = conf.replace("[Interface]", f"[Interface]\nTable = off\nPostUp = {up}\nPostDown = {down}", 1)
+        conf_path = f"{path}/{interface}.conf"
+        runner.upload_text(conf_path, conf, 0o600)
+        if downstream.link_protocol == "awg":
+            _, service = self._awg_up_with_fallback(
+                runner, conf_path, config_id, path, interface=interface, service_name="exit-link")
+        else:
+            service = compose_wg_service(
+                f"cv-wglink-{self._resource_tag(config_id)}", conf_path,
+                interface=interface, service_name="exit-link")
+        if service:
+            compose = f"services:\n{service}\n"
+            runner.upload_text(f"{path}/docker-compose.yml", compose)
+            _ensure_compose_images(runner, compose)
+            podman_compose_up(runner, path, _compose_project_at(config_id, path))
+        # Bind the resources to this config only after the link is up: a crash
+        # before this point leaves live state without a reservation, which the
+        # next probe treats as foreign (safe direction). Host-side release on
+        # stop/delete handles both native and container teardowns.
+        mkdir_remote(runner, res_dir)
+        runner.upload_text(f"{res_dir}/{table}", config_id + "\n", 0o644)
+
+    def _deploy_nat_exit(self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec, *, separate_awg_subnet: bool = False) -> tuple[ExitEndpoint, str]:
+        if hop.protocol == "awg":
+            client_conf, _, awg_conf = self._awg_entry_bundle(path, config_id, hop, "10.9.1.0/24")
+            if separate_awg_subnet:
+                # Entry awg0 already owns 10.9.1.1: avoid routing the link to self.
+                awg_conf = awg_conf.replace("10.9.1.", "10.79.1.")
+                client_conf = client_conf.replace("10.9.1.", "10.79.1.")
+            conf_path = f"{path}/awg0.conf"
+            runner.upload_text(conf_path, awg_conf, 0o600)
+            use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0")
+            if svc:
+                compose = f"services:\n{svc}\n"
+                runner.upload_text(f"{path}/docker-compose.yml", compose)
+                _ensure_compose_images(runner, compose)
+                podman_compose_up(runner, path, _compose_project_at(config_id, path))
+            return ExitEndpoint(host=hop.server_host, port=55424), client_conf
         return self._deploy_wg_exit(runner, path, config_id, hop)
 
-    def _deploy_wg_exit(self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec) -> ExitEndpoint:
-        _, pub = generate_wg_keypair()
+    def _deploy_wg_exit(self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec) -> tuple[ExitEndpoint, str]:
         server_priv, server_pub = generate_wg_keypair()
         relay_priv, relay_pub = generate_wg_keypair()
         subnet = "10.77.0.0/30"
@@ -534,7 +746,16 @@ AllowedIPs = 10.77.0.2/32
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
-        return ExitEndpoint(host=hop.server_host, port=51821)
+        client_conf = f"""[Interface]
+PrivateKey = {relay_priv}
+Address = 10.77.0.2/30
+[Peer]
+PublicKey = {server_pub}
+Endpoint = {endpoint_host(hop.server_host)}:51821
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 15
+"""
+        return ExitEndpoint(host=hop.server_host, port=51821), client_conf
 
     def _deploy_ovpn_exit(
         self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec, plan: ChainPlan | None = None
@@ -571,7 +792,7 @@ Log err file /dev/null
             )
             + "\nvolumes:\n  tor-data:\n"
         )
-        runner.upload_text(f"{path}/torrc", torrc)
+        runner.upload_text(f"{path}/torrc", torrc, mode=0o644)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
@@ -621,9 +842,16 @@ Log err file /dev/null
         )
         conf_path = f"{path}/awg0.conf"
         runner.upload_text(conf_path, awg_conf, 0o600)
-        ensure_awg_on_host(runner)
-        awg_quick_up(runner, conf_path)
-        return client_conf, path, {}
+        use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0")
+        if svc:
+            compose = f"services:\n{svc}\n"
+            runner.upload_text(f"{path}/docker-compose.yml", compose)
+            _ensure_compose_images(runner, compose)
+            podman_compose_up(runner, path, _compose_project_at(config_id, path))
+        meta = {"hostAwg": use_host}
+        if svc:
+            meta["_awg_svc"] = svc
+        return client_conf, path, meta
 
     def _deploy_entry_compose(
         self,
@@ -635,6 +863,7 @@ Log err file /dev/null
         *,
         entry_path: str,
         client_conf: str = "",
+        entry_awg_svc: str | None = None,
     ) -> tuple[str, str, dict[str, Any]]:
         path = entry_path
         bypass_meta: dict[str, Any] = {}
@@ -642,7 +871,15 @@ Log err file /dev/null
         entry_if = "awg0"
         subnet = "10.9.1.0/24"
         services: list[str] = []
-        use_gateway = entry_needs_gateway(plan, downstream is not None, local_tor)
+        if entry_awg_svc:
+            services.append(entry_awg_svc)
+            bypass_meta["hostAwg"] = False
+        link_downstream = bool(downstream and isinstance(downstream.link_client_conf, str) and downstream.link_client_conf)
+        if link_downstream:
+            self._deploy_exit_link(runner, path, config_id, downstream, entry_if=entry_if)
+            # No local DNS gateway is started for a directly forwarded VPN entry.
+            client_conf = client_conf.replace("DNS = 10.9.1.1", "DNS = 1.1.1.1")
+        use_gateway = entry_needs_gateway(plan, downstream is not None, local_tor) and not link_downstream
 
         if local_tor:
             tor_svc, tor_files = self._tor_sidecar_bundle(path, config_id)
@@ -709,19 +946,26 @@ Log err file /dev/null
 
         client_conf = ""
         services: list[str] = []
-        use_gateway = entry_needs_gateway(plan, downstream is not None, local_tor)
+        link_downstream = bool(downstream and isinstance(downstream.link_client_conf, str) and downstream.link_client_conf)
+        if link_downstream:
+            self._deploy_exit_link(runner, path, config_id, downstream, entry_if=entry_if)
+        use_gateway = entry_needs_gateway(plan, downstream is not None, local_tor) and not link_downstream
 
         if entry.protocol == "awg":
             client_conf, _, awg_conf = self._awg_entry_bundle(
-                path, config_id, plan.entry, subnet or "10.9.1.0/24", gateway_mode=use_gateway
+                path, config_id, plan.entry, subnet or "10.9.1.0/24", gateway_mode=use_gateway or link_downstream
             )
+            if link_downstream:
+                client_conf = client_conf.replace("DNS = 10.9.1.1", "DNS = 1.1.1.1")
             conf_path = f"{path}/awg0.conf"
             runner.upload_text(conf_path, awg_conf, 0o600)
-            ensure_awg_on_host(runner)
-            awg_quick_up(runner, conf_path)
+            use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0")
+            if svc:
+                services.insert(0, svc)
+            bypass_meta["hostAwg"] = use_host
         elif entry.protocol == "wg":
             client_conf, wg_svc, wg_conf = self._wg_entry_bundle(
-                path, config_id, plan.entry, gateway_mode=use_gateway
+                path, config_id, plan.entry, gateway_mode=use_gateway or link_downstream
             )
             runner.upload_text(f"{path}/wg0.conf", wg_conf, 0o600)
             services.append(wg_svc)
@@ -754,7 +998,7 @@ Log err file /dev/null
                 path,
                 config_id,
                 plan.entry,
-                skip_wan_nat=needs_wg_link(plan) or use_gateway,
+                skip_wan_nat=link_downstream or use_gateway,
             )
             for name, content, mode in ovpn_files:
                 runner.upload_text(f"{path}/{name}", content, mode)
@@ -799,7 +1043,7 @@ Log err file /dev/null
                     plan.entry.server_host,
                     _ovpn_transport(plan.entry),
                 )
-                if needs_wg_link(plan):
+                if link_downstream:
                     runner.run(
                         "WAN=$(ip -4 route show default | awk '/default/{print $5;exit}'); "
                         "iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o \"$WAN\" -j MASQUERADE 2>/dev/null || true"
@@ -1030,7 +1274,7 @@ sysctl -w net.ipv4.conf.all.route_localnet=1 2>/dev/null || true
         xray_cfg, torrc, start_sh = self._pending_gateway_files
         runner.upload_text(f"{path}/config.json", json.dumps(xray_cfg, indent=2))
         if torrc:
-            runner.upload_text(f"{path}/torrc", torrc)
+            runner.upload_text(f"{path}/torrc", torrc, mode=0o644)
         runner.upload_text(f"{path}/start.sh", start_sh, 0o755)
         del self._pending_gateway_files
 
@@ -1063,6 +1307,13 @@ Log err file /dev/null
         plan: ChainPlan,
         hops: list[HopSpec],
     ) -> tuple[str, str, dict[str, Any]]:
+        exit_hop_check = hops[-1]
+        if (exit_hop_check.protocol in ("awg", "wg")
+                and hops[0].protocol == exit_hop_check.protocol):
+            raise ValueError(
+                f"Цепь {hops[0].protocol}→…→{exit_hop_check.protocol} на одном VPS не поддерживается: "
+                "входное и выходное звенья делят интерфейс, подсеть и порт — используйте разные серверы"
+            )
         path = self._instance(runner, config_id)
         mkdir_remote(runner, path)
         services: list[str] = []
@@ -1082,8 +1333,9 @@ Log err file /dev/null
                 _, _, exit_conf = self._awg_entry_bundle(path, config_id, exit_hop, "10.9.1.0/24")
                 conf_path = f"{path}/awg0.conf"
                 runner.upload_text(conf_path, exit_conf, 0o600)
-                ensure_awg_on_host(runner)
-                awg_quick_up(runner, conf_path)
+                use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0", service_name="awg-exit")
+                if svc:
+                    services.append(svc)
             else:
                 _, exit_svc, exit_conf = self._wg_entry_bundle(path, config_id, exit_hop)
                 runner.upload_text(f"{path}/wg0.conf", exit_conf, 0o600)
@@ -1158,8 +1410,10 @@ Log err file /dev/null
             client_conf, _, awg_conf = self._awg_entry_bundle(path, config_id, plan.entry, subnet or "10.9.1.0/24")
             conf_path = f"{path}/awg0.conf"
             runner.upload_text(conf_path, awg_conf, 0o600)
-            ensure_awg_on_host(runner)
-            awg_quick_up(runner, conf_path)
+            use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0")
+            if svc:
+                services.insert(0, svc)
+            bypass_meta["hostAwg"] = use_host
         elif entry.protocol == "wg":
             client_conf, entry_svc, wg_conf = self._wg_entry_bundle(path, config_id, plan.entry)
             runner.upload_text(f"{path}/wg0.conf", wg_conf, 0o600)
@@ -1252,7 +1506,13 @@ Log err file /dev/null
             exit_servers[0]["users"] = [{"user": downstream.auth_user, "pass": downstream.auth_pass}]
 
         outbounds: list[dict] = []
-        if downstream.direct:
+        if downstream.link_client_conf:
+            exit_out = {
+                "tag": "exit", "protocol": "freedom",
+                "settings": {"domainStrategy": "UseIPv4"},
+                "streamSettings": {"sockopt": {"mark": downstream.link_mark or 102}},
+            }
+        elif downstream.direct:
             if via_tor:
                 exit_out: dict = {
                     "tag": "exit",
@@ -1420,6 +1680,8 @@ Log err file /dev/null
     def _deploy_xray_relay(
         self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec, downstream: ExitEndpoint
     ) -> ExitEndpoint:
+        if downstream.link_client_conf:
+            self._deploy_exit_link(runner, path, config_id, downstream)
         via_tor = downstream.via_tor or downstream.direct
         xray_cfg = self._xray_chain_config(
             downstream, via_tor=via_tor, entry_redirect=False, relay_inbound=True
@@ -1432,6 +1694,7 @@ Log err file /dev/null
                 path,
                 service_name="xray-relay",
                 config_file="config.json",
+                net_admin=bool(downstream.link_client_conf),
             )
             + "\n"
         )
@@ -1479,8 +1742,12 @@ Log err file /dev/null
         )
         conf_path = f"{path}/awg0.conf"
         runner.upload_text(conf_path, awg_conf, 0o600)
-        ensure_awg_on_host(runner)
-        awg_quick_up(runner, conf_path)
+        use_host, svc = self._awg_up_with_fallback(runner, conf_path, config_id, path, interface="awg0")
+        if svc:
+            compose = f"services:\n{svc}\n"
+            runner.upload_text(f"{path}/docker-compose.yml", compose)
+            _ensure_compose_images(runner, compose)
+            podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return client_conf, path
 
     def _deploy_wg_entry(
@@ -1558,6 +1825,7 @@ PersistentKeepalive = 15
             services.append(compose_xray_service(
                 f"cv-hy2-bridge-{self._resource_tag(config_id)}", path,
                 service_name="hy2-bridge", config_file="hy2-bridge.json",
+                net_admin=bool(downstream.link_client_conf),
             ))
         if local_tor:
             tor_service, tor_files = self._tor_sidecar_bundle(path, config_id)
@@ -1625,6 +1893,7 @@ PersistentKeepalive = 15
                 service_name="xray-entry",
                 config_file="entry-config.json",
                 depends_on="tor-sidecar" if local_tor else None,
+                net_admin=bool(downstream and downstream.link_client_conf),
             )
             files = [("entry-config.json", json.dumps(xray_cfg, indent=2), 0o644)]
             return client_conf, service, files, bypass_meta
@@ -1684,6 +1953,7 @@ PersistentKeepalive = 15
             config_file="entry-config.json",
             tls_cn=hop.server_host,
             depends_on="tor-sidecar" if local_tor else None,
+            net_admin=bool(downstream and downstream.link_client_conf),
         )
         # Generated TLS certificate is self-signed; explicit client opt-in is required.
         vless_uri = (
@@ -1752,7 +2022,7 @@ def _hop_meta_for_storage(h: HopSpec, plan: ChainPlan) -> dict[str, Any]:
     return hop
 
 
-def _chain_result_meta(plan: ChainPlan, client_config: str, *, config_id: str = "") -> dict[str, Any]:
+def _chain_result_meta(plan: ChainPlan, client_config: str, *, config_id: str = "", bypass_meta: dict[str, Any] | None = None) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "chain": True,
         "hops": [_hop_meta_for_storage(h, plan) for h in plan.hops],
@@ -1763,7 +2033,7 @@ def _chain_result_meta(plan: ChainPlan, client_config: str, *, config_id: str = 
         meta["xrayBypass"] = True
     if plan.entry.protocol == "awg":
         tag = _chain_tag(config_id) if config_id else "chain"
-        meta["hostAwg"] = True
+        meta["hostAwg"] = (bypass_meta or {}).get("hostAwg", True)
         ver = getattr(plan.entry, "awg_version", None) or "awg3.1"
         meta["awgVersion"] = ver
         meta["listenPort"] = 55424

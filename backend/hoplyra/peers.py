@@ -74,10 +74,24 @@ def _iface_and_prefix(cfg: dict[str, Any]) -> tuple[str, str, str]:
     protocol = cfg["protocol"]
     quote = shlex.quote
     iface = meta.get("interface") or f"{'awg' if protocol == 'awg' else 'wg'}_{cfg['id'][:8]}"
+    container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
+    is_host_awg = meta.get("hostAwg", True if protocol == "awg" else False)
     if protocol == "wg":
-        container = cfg.get("container_name") or f"cv-wg-{cfg['id'][:8]}"
         return iface, f"podman exec {quote(container)} wg", quote(iface)
+    if protocol == "awg" and not is_host_awg:
+        return iface, f"podman exec {quote(container)} awg", quote(iface)
     return iface, "awg", quote(iface)
+
+
+def _container_tool_cmd(container: str, tool: str, subcmd: str) -> str:
+    """Build a reliable podman/docker exec command with arguments inside the invocation."""
+    quote = shlex.quote
+    q_cont = quote(container)
+    return (
+        f"if command -v podman >/dev/null 2>&1; then "
+        f"podman exec {q_cont} {tool} {subcmd}; "
+        f"else docker exec {q_cont} {tool} {subcmd}; fi"
+    )
 
 
 def add_peer_on_host(
@@ -89,17 +103,27 @@ def add_peer_on_host(
 ) -> None:
     protocol = cfg["protocol"]
     quote = shlex.quote
+    meta = json.loads(cfg.get("meta_json") or "{}")
+    is_host_awg = meta.get("hostAwg", True if protocol == "awg" else False)
+    is_container = protocol == "wg" or (protocol == "awg" and not is_host_awg)
+    tool = "wg" if protocol == "wg" else "awg"
     _, tool_prefix, q_iface = _iface_and_prefix(cfg)
     allowed = quote(f"{client_ip}/32")
-    if protocol == "wg":
-        container = cfg.get("container_name") or f"cv-wg-{cfg['id'][:8]}"
+
+    if is_container:
+        container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
         q_cont = quote(container)
         inner = (
-            f"echo {quote(preshared_key)} > /tmp/psk.tmp && "
-            f"wg set {q_iface} peer {quote(public_key)} preshared-key /tmp/psk.tmp allowed-ips {allowed}; "
-            "rc=$?; rm -f /tmp/psk.tmp; exit $rc"
+            "t=$(mktemp /tmp/psk.XXXXXX) && chmod 0600 \"$t\" && "
+            "trap 'rm -f \"$t\"' EXIT INT TERM && "
+            f"printf '%s\\n' {quote(preshared_key)} > \"$t\" && "
+            f"{tool} set {q_iface} peer {quote(public_key)} preshared-key \"$t\" allowed-ips {allowed}"
         )
-        cmd = f"podman exec {q_cont} /bin/sh -c {quote(inner)}"
+        cmd = (
+            f"if command -v podman >/dev/null 2>&1; then "
+            f"podman exec {q_cont} /bin/sh -c {quote(inner)}; "
+            f"else docker exec {q_cont} /bin/sh -c {quote(inner)}; fi"
+        )
     else:
         inner_cmd = (
             f"{tool_prefix} set {q_iface} peer {quote(public_key)} "
@@ -130,9 +154,19 @@ def remove_peer_on_host(
     cfg: dict[str, Any],
     public_key: str,
 ) -> None:
+    protocol = cfg["protocol"]
     quote = shlex.quote
+    meta = json.loads(cfg.get("meta_json") or "{}")
+    is_host_awg = meta.get("hostAwg", True if protocol == "awg" else False)
+    is_container = protocol == "wg" or (protocol == "awg" and not is_host_awg)
+    tool = "wg" if protocol == "wg" else "awg"
     _, tool_prefix, q_iface = _iface_and_prefix(cfg)
-    cmd = f"{tool_prefix} set {q_iface} peer {quote(public_key)} remove"
+
+    if is_container:
+        container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
+        cmd = _container_tool_cmd(container, tool, f"set {q_iface} peer {quote(public_key)} remove")
+    else:
+        cmd = f"{tool_prefix} set {q_iface} peer {quote(public_key)} remove"
     code, _, err = runner.run(cmd, timeout=30)
     if code != 0:
         raise RuntimeError(f"Не удалось удалить пира с сервера: {err[:300]}")
@@ -368,8 +402,16 @@ def get_peer_stats(cfg: dict[str, Any], runner: RemoteRunner) -> dict[str, dict[
 
     stats: dict[str, dict[str, Any]] = {}
     if protocol in ("awg", "wg"):
+        meta = json.loads(cfg.get("meta_json") or "{}")
+        is_host_awg = meta.get("hostAwg", True if protocol == "awg" else False)
+        is_container = protocol == "wg" or (protocol == "awg" and not is_host_awg)
+        tool = "wg" if protocol == "wg" else "awg"
         _, tool_prefix, q_iface = _iface_and_prefix(cfg)
-        cmd = f"{tool_prefix} show {q_iface} dump"
+        if is_container:
+            container = cfg.get("container_name") or f"cv-{protocol}-{cfg['id'][:8]}"
+            cmd = _container_tool_cmd(container, tool, f"show {q_iface} dump")
+        else:
+            cmd = f"{tool_prefix} show {q_iface} dump"
         code, out, _ = runner.run(cmd, timeout=10)
         if code == 0:
             for line in out.splitlines():
