@@ -106,8 +106,9 @@ def ensure_amnezia_awg_headers(
     params: AwgObfuscationParams | None = None,
 ) -> str:
     awg = params or generate_awg2_params()
-    if parse_awg_params_from_conf(conf) and re.search(r"^I1\s*=", conf, re.MULTILINE):
-        return ensure_awg2_obfuscation_in_conf(conf, parse_awg_params_from_conf(conf))
+    parsed = parse_awg_params_from_conf(conf)
+    if parsed and re.search(r"^I1\s*=", conf, re.MULTILINE):
+        return ensure_awg2_obfuscation_in_conf(conf, parsed)
     return ensure_awg2_obfuscation_in_conf(conf, awg)
 
 

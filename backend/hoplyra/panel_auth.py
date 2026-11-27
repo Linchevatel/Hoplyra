@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets as pysecrets
+from typing import Any
 
 from hoplyra.db import _now, connect
 

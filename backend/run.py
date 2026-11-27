@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+# Hoplyra server runner
 import os
 import socket
+from typing import Any
 
 import uvicorn
 
@@ -44,7 +46,7 @@ if __name__ == "__main__":
     else:
         print("Dashboard:   not bundled (API only)")
 
-    uvicorn_kwargs: dict[str, object] = {
+    uvicorn_kwargs: dict[str, Any] = {
         "host": HOST,
         "port": PORT,
         "reload": False,

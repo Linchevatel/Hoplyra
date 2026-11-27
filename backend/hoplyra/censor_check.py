@@ -17,6 +17,7 @@ import base64
 import hashlib
 import ipaddress
 import logging
+import socket
 import threading
 import time
 import urllib.request
@@ -86,9 +87,9 @@ def _ip_to_uint32(ip_str: str) -> int:
     return int(ipaddress.IPv4Address(ip_str))
 
 
-def _build_radix_tree(lines: list[str]) -> dict[str, Any]:
+def _build_radix_tree(lines: list[str]) -> dict[Any, Any]:
     """Build a 32-bit binary trie from IPv4 CIDR subnets."""
-    root: dict[str, Any] = {}
+    root: dict[Any, Any] = {}
     for line in lines:
         raw = line.strip()
         if not raw or raw.startswith("#"):
@@ -114,7 +115,7 @@ def _build_radix_tree(lines: list[str]) -> dict[str, Any]:
     return root
 
 
-def _match_radix_tree(tree: dict[str, Any], ip_str: str) -> str | None:
+def _match_radix_tree(tree: dict[Any, Any], ip_str: str) -> str | None:
     """Check if IPv4 address falls into any subnet in the radix tree."""
     try:
         ip_int = _ip_to_uint32(ip_str)
@@ -322,7 +323,7 @@ def is_ip_in_rkn_registry(host: str, cache_dir: Path | None = None) -> tuple[boo
             # Домен
             try:
                 addr_info = socket.getaddrinfo(host, None, socket.AF_INET)
-                resolved_ips = list({item[4][0] for item in addr_info})
+                resolved_ips = [str(ip) for ip in {item[4][0] for item in addr_info}]
             except Exception as exc:
                 log.warning("Failed resolving domain %s: %s", host, exc)
                 return None, False, None, []

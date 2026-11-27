@@ -1,4 +1,6 @@
 import type { AwgParams } from './awg'
+import { DeployLogProvider } from './deploy-log-provider'
+import { useDeployLogDrawer } from './deploy-log-context'
 import { DashboardContext } from './dashboard-context'
 import {
   useState,
@@ -131,6 +133,11 @@ function clearServerVpnState(serverId: string): (s: VpsServer) => VpsServer {
 }
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
+  return <DeployLogProvider><DashboardStateProvider>{children}</DashboardStateProvider></DeployLogProvider>
+}
+
+function DashboardStateProvider({ children }: { children: ReactNode }) {
+  const { open: openDeployLog } = useDeployLogDrawer()
   const [servers, setServers] = useState<VpsServer[]>(INITIAL_STATE.servers)
   const [chainDraft, setChainDraftState] = useState<ChainHop[]>(() =>
     loadJson<ChainHop[]>(CHAIN_DRAFT_KEY, []),
@@ -805,6 +812,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         try {
           const started = await api.deployConfig(serverId, protocol, options)
+          openDeployLog(started.id, { title: protocol.toUpperCase(), subtitle: serversRef.current.find((server) => server.id === serverId)?.name ?? serverId })
           setConfigs((prev) => [...prev.filter((c) => !isSameConfig(c, started.id) && c.id !== pendingId), started])
           const deployed = await waitForConfigDeploy(started.id, {
             onUpdate: (cfg) => {
@@ -895,7 +903,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         protocol,
       })
     },
-    [deletingConfigIds, apiEnabled, failLocalOnlyDeploy, setConfigs, pushHistory, pushNotification],
+    [openDeployLog, deletingConfigIds, apiEnabled, failLocalOnlyDeploy, setConfigs, pushHistory, pushNotification],
   )
 
   const deployChain = useCallback(
@@ -939,6 +947,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         try {
           const started = await api.deployChainApi(hops)
+          openDeployLog(started.id, { title: hops.map((hop) => hop.protocol.toUpperCase()).join(' → '), subtitle: serversRef.current.find((server) => server.id === entry.serverId)?.name ?? entry.serverId })
           setChainDeployUi((session) =>
             session
               ? {
@@ -1144,7 +1153,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         involvedIds,
       })
     },
-    [apiEnabled, failLocalOnlyDeploy, pushHistory, pushNotification, resetChainDeploySession, setConfigs],
+    [openDeployLog, apiEnabled, failLocalOnlyDeploy, pushHistory, pushNotification, resetChainDeploySession, setConfigs],
   )
 
   const stopConfig = useCallback(

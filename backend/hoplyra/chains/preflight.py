@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from hoplyra.deploy_log import publish_current
 from hoplyra.host_setup import ensure_host_ready
 from hoplyra.remote import RemoteRunner, ServerTarget, measure_tcp_latency, test_ssh_auth
 
@@ -119,6 +120,7 @@ def recheck_runners_online(runners: dict[str, RemoteRunner]) -> None:
             continue
         latency = measure_tcp_latency(host, runner.target.port, timeout=10.0)
         if latency is None:
+            publish_current(f"Server {host}:{runner.target.port} unreachable (TCP timeout)", stage="health", level="error")
             failures.append(
                 ServerCheckResult(sid, host, host, False, f"порт SSH {runner.target.port} недоступен")
             )
@@ -126,6 +128,9 @@ def recheck_runners_online(runners: dict[str, RemoteRunner]) -> None:
         code, out, err = runner.run("echo HOPLYRA_OK", timeout=20)
         if code != 0 or "HOPLYRA_OK" not in out:
             detail = (err or out or "SSH недоступен").strip()[:500]
+            publish_current(f"Server {host}:{runner.target.port} SSH probe failed: {detail}", stage="health", level="error")
             failures.append(ServerCheckResult(sid, host, host, False, detail, latency))
+        else:
+            publish_current(f"Server {host}:{runner.target.port} online (latency {latency} ms, SSH OK)", stage="health")
     if failures:
         raise ChainPreflightError(failures)

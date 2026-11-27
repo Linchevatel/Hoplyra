@@ -480,3 +480,11 @@ export function applySystemUpdateApi(version?: string): Promise<{ ok: boolean; s
     body: JSON.stringify({ version: version || null }),
   })
 }
+
+export function fetchDeployLog(configId: string, since = 0): Promise<import('./deploy-log-state').DeployLogPayload> {
+  return request(`/api/configs/${encodeURIComponent(configId)}/deploy-log?since=${since}`)
+}
+
+export function deployLogStreamUrl(configId: string, since = 0): string {
+  return `${BASE}/api/configs/${encodeURIComponent(configId)}/deploy-log/stream?since=${since}`
+}

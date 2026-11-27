@@ -19,7 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from hoplyra.health_check import health_loop, refresh_config
 from hoplyra.routing_zones import get_bypass_ru_allowed_ips, start_weekly_zone_updater
-from hoplyra import db
+from hoplyra import db, deploy_log
 from hoplyra.auth import (
     SessionAuthMiddleware,
     session_secret_key,
@@ -56,7 +56,7 @@ from hoplyra.chains.deployer import _chain_tag
 from hoplyra.chains.planner import build_plan, validate_chain
 from hoplyra.chains.route_test import test_chain_route
 from hoplyra.chains.preflight import ChainPreflightError, recheck_runners_online, verify_chain_servers
-from hoplyra.protocols import DEPLOYERS, get_deployer_for_config
+from hoplyra.protocols import DEPLOYERS, OpenVPNDeployer, get_deployer_for_config
 from hoplyra.remote import RemoteRunner, ServerTarget, is_local_host, load_private_key, measure_tcp_latency, probe_server, test_ssh_auth
 from hoplyra.host_setup import ensure_host_ready
 from hoplyra.server_prepare import (
@@ -749,7 +749,7 @@ def settings_db_backup() -> FileResponse:
 
 
 @app.post("/api/settings/db-backup/restore")
-def settings_db_restore(body: RestoreBackupRequest) -> dict[str, str]:
+def settings_db_restore(body: RestoreBackupRequest) -> dict[str, Any]:
     try:
         pre_restore, restored = restore_db_backup_by_name(body.name)
     except FileNotFoundError as exc:
@@ -770,7 +770,7 @@ def settings_db_restore(body: RestoreBackupRequest) -> dict[str, str]:
 
 
 @app.post("/api/settings/db-backup/restore-upload")
-async def settings_db_restore_upload(file: UploadFile = File(...)) -> dict[str, str]:
+async def settings_db_restore_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith(".db"):
         raise HTTPException(status_code=400, detail="Expected a .db SQLite backup file")
     content = await file.read()
@@ -899,7 +899,7 @@ def create_server(body: ServerCreate) -> dict[str, Any]:
                 target.port,
                 target.username,
                 target.auth_type,
-                encrypt_auth_secret(target.auth_secret),
+                encrypt_auth_secret(target.auth_secret) if target.auth_secret else None,
                 None,
                 location,
                 json.dumps(body.tags),
@@ -1184,7 +1184,7 @@ def _hop_payload(hops: list[ChainHopRequest]) -> list[dict[str, Any]]:
             elif h.awgParams and h.awgMode != "auto":
                 awg_dict = (
                     h.awgParams.model_dump(exclude_none=True)
-                    if hasattr(h.awgParams, "model_dump")
+                    if isinstance(h.awgParams, BaseModel)
                     else dict(h.awgParams)
                 )
                 if h.awgMode == "custom":
@@ -1349,7 +1349,7 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
         elif body.awgParams and body.awgMode != "auto":
             raw_overrides = (
                 body.awgParams.model_dump(exclude_none=True)
-                if hasattr(body.awgParams, "model_dump")
+                if isinstance(body.awgParams, BaseModel)
                 else dict(body.awgParams)
             )
             if body.awgMode == "custom":
@@ -1375,7 +1375,7 @@ def deploy_config(body: DeployRequest) -> dict[str, Any]:
             awg_resolved = generate_auto_awg_params(clean_ver)
             awg_params_dict = awg_resolved.as_meta()
 
-    meta_initial = {"awgVersion": awg_ver, "awgMode": body.awgMode or "auto"} if protocol == "awg" else {}
+    meta_initial: dict[str, Any] = {"awgVersion": awg_ver, "awgMode": body.awgMode or "auto"} if protocol == "awg" else {}
     if protocol == "awg" and awg_params_dict:
         meta_initial["awgParams"] = awg_params_dict
 
@@ -1749,7 +1749,10 @@ def delete_config(config_id: str) -> dict[str, bool]:
 
     if is_deploy_active(config_id):
         request_deploy_cancel(config_id)
-        wait_deploy_inactive(config_id, timeout=15.0)
+        if not wait_deploy_inactive(config_id, timeout=15.0):
+            log.warning("Delete config %s: deploy did not stop within timeout, forcing cancellation in deploy_log", config_id)
+            deploy_log.publish(config_id, "Deployment cancelled and forced stopped by deletion", level="warn", stage="cancelled")
+            deploy_log.mark_finished(config_id, False)
 
     with connect() as conn:
         cfg = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
@@ -1779,6 +1782,43 @@ def _get_config_and_server(config_id: str) -> tuple[Any, Any]:
 
 class PeerCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+
+
+def _require_deploy_log_config(config_id: str) -> None:
+    if deploy_log.exists(config_id):
+        return
+    with connect() as conn:
+        if not conn.execute("SELECT id FROM configs WHERE id=?", (config_id,)).fetchone():
+            raise HTTPException(404, "Config not found")
+
+
+@app.get("/api/configs/{config_id}/deploy-log")
+def get_deploy_log(config_id: str, since: int = 0) -> dict[str, Any]:
+    _require_deploy_log_config(config_id)
+    return deploy_log.read(config_id, since)
+
+
+@app.get("/api/configs/{config_id}/deploy-log/stream")
+async def stream_deploy_log(config_id: str, request: Request, since: int = 0) -> StreamingResponse:
+    await asyncio.to_thread(_require_deploy_log_config, config_id)
+
+    async def generate():
+        cursor = max(0, since)
+        while not await request.is_disconnected():
+            await asyncio.to_thread(deploy_log.wait_for_events, config_id, cursor, 15.0)
+            payload = deploy_log.read(config_id, cursor)
+            events, state = payload["events"], payload["status"]
+            if events:
+                cursor = events[-1]["seq"]
+                yield "data: " + json.dumps({"events": events, "status": state}) + "\n\n"
+            if state["finished"] and cursor >= state["seq"]:
+                yield "event: end\ndata: " + json.dumps({"status": state}) + "\n\n"
+                return
+            if not events:
+                yield ": ping\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/configs/{config_id}/peers")
@@ -1876,12 +1916,13 @@ def get_client_config(config_id: str, mode: str | None = None) -> dict[str, str]
     if cfg["protocol"] == "openvpn" and client_config and "PKI ещё" in client_config:
         meta = json.loads(cfg["meta_json"] or "{}")
         deployer = get_deployer_for_config("openvpn", meta)
-        runner = RemoteRunner(_server_target(row))
-        refreshed = deployer._build_client_ovpn(runner, cfg["instance_path"], row["host"])
-        if refreshed and "PKI ещё" not in refreshed:
-            with connect() as conn:
-                conn.execute("UPDATE configs SET client_config=? WHERE id=?", (refreshed, config_id))
-            client_config = refreshed
+        if isinstance(deployer, OpenVPNDeployer):
+            runner = RemoteRunner(_server_target(row))
+            refreshed = deployer._build_client_ovpn(runner, cfg["instance_path"], row["host"])
+            if refreshed and "PKI ещё" not in refreshed:
+                with connect() as conn:
+                    conn.execute("UPDATE configs SET client_config=? WHERE id=?", (refreshed, config_id))
+                client_config = refreshed
 
     if not client_config:
         raise HTTPException(404, "Client config not ready yet")

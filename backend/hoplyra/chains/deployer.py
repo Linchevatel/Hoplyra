@@ -19,6 +19,7 @@ from hoplyra.chains.resolver import (
 )
 from hoplyra.chains.preflight import recheck_runners_online
 from hoplyra.deploy_cancel import check_deploy_cancel
+from hoplyra.deploy_log import publish
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_up, wan_wg_forward_down_cmd, wan_wg_forward_up_cmd
 from hoplyra.wg_keys import generate_wg_keypair
 from hoplyra.awg_params import (
@@ -164,6 +165,8 @@ def _ensure_compose_images(runner: RemoteRunner, compose: str) -> None:
 
 
 class ChainDeployer:
+    _hop_index: int | None = None
+
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
 
@@ -225,9 +228,13 @@ class ChainDeployer:
 
         for idx, server_id in enumerate(plan.servers_order):
             check_deploy_cancel(config_id)
+            publish(config_id, f"Checking connectivity for {len(runners)} server(s)", stage="health")
             recheck_runners_online(runners)
             server_hops = hops_on_server(plan, server_id)
             runner = runners[server_id]
+            for hop in server_hops:
+                role = "entry" if hop.index == 0 else "exit" if hop.index == len(plan.hops) - 1 else "relay"
+                publish(config_id, f"Server {runner.target.host}: deploying hop {hop.index + 1}/{len(plan.hops)} as {role} ({hop.protocol.upper()})", stage=f"hop {hop.index + 1}")
             is_last = idx == len(plan.servers_order) - 1
 
             touch(server_id)
@@ -305,9 +312,13 @@ class ChainDeployer:
         progress = SequentialHopStatus(plan.hops, on_hop_status) if on_hop_status else None
         if progress:
             progress.start()
-        bypass_meta = {}
+        client = ""
+        path = ""
+        container = ""
+        bypass_meta: dict[str, Any] = {}
         for hop in reversed(plan.hops):
             check_deploy_cancel(config_id)
+            publish(config_id, f"Checking connectivity before hop {hop.index + 1}", stage="health")
             recheck_runners_online(runners)
             if hop.server_id not in touched:
                 if on_server_touched:
@@ -316,6 +327,7 @@ class ChainDeployer:
             worker = ChainDeployer(self.data_dir)
             worker._hop_index = hop.index
             runner = runners[hop.server_id]
+            publish(config_id, f"Server {runner.target.host}: revisiting hop {hop.index + 1} ({hop.protocol.upper()})", stage=f"hop {hop.index + 1}")
             if hop.index == 0:
                 client, path, bypass_meta = worker._deploy_entry_server(
                     runner, config_id, plan, [hop], downstream)
@@ -417,6 +429,7 @@ class ChainDeployer:
         compose = f"services:\n{service}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
+        publish(config_id, f"Deploying compose stack for exit node ({hop.protocol.upper()})", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return endpoint
 
@@ -501,7 +514,9 @@ PersistentKeepalive = 15
         entry_runner.upload_text(f"{entry_path}/docker-compose.yml", entry_compose)
         _ensure_compose_images(exit_runner, exit_compose)
         _ensure_compose_images(entry_runner, entry_compose)
+        publish(config_id, "Starting compose stack for exit link tunnel", stage="compose")
         podman_compose_up(exit_runner, exit_path, f"{_compose_project(config_id)}-link-exit")
+        publish(config_id, "Starting compose stack for entry link tunnel", stage="compose")
         podman_compose_up(entry_runner, entry_path, f"{_compose_project(config_id)}-link-entry")
 
     def _awg_up_with_fallback(
@@ -514,12 +529,14 @@ PersistentKeepalive = 15
         service_name: str = "awg",
     ) -> tuple[bool, str | None]:
         """Attempt native host AWG first; return (use_host, opt_service_string) for container fallback."""
+        publish(config_id, "Probing host AmneziaWG kernel runtime", stage="awg")
         c_mod, _, _ = runner.run("modprobe amneziawg 2>/dev/null && command -v awg-quick >/dev/null && echo ok")
         if c_mod == 0:
             ensure_awg_on_host(runner)
             awg_quick_up(runner, conf_path)
             return True, None
 
+        publish(config_id, "Using containerized AmneziaWG fallback", stage="awg")
         # Container fallback: return compose service definition to be bundled into the final docker-compose.yml
         if service_name == "exit-link":
             container = f"cv-awglink-{self._resource_tag(config_id)}"
@@ -536,6 +553,7 @@ PersistentKeepalive = 15
     ) -> None:
         """Consume the exit peer without installing a host-wide default route."""
         ifsuffix, _, _ = _link_net(config_id)
+        publish(config_id, "Configuring exit-link: allocating routing table and mark", stage="exit-link")
         base_n = int(ifsuffix, 16)
         # Persistent ownership binding: a reservation file per table names the
         # config that owns it. A candidate is "ours" ONLY by that file — never
@@ -647,6 +665,7 @@ PersistentKeepalive = 15
         if chosen is None:
             raise RuntimeError("Не удалось выделить свободную таблицу маршрутизации для exit-link")
         ifsuffix, table, mark, interface = chosen
+        publish(config_id, f"Exit-link ready: table {table}, fwmark {mark:#x} (interface {interface})", stage="exit-link")
         prio = table
         downstream.link_table = table
         downstream.link_mark = mark
@@ -692,6 +711,7 @@ PersistentKeepalive = 15
             compose = f"services:\n{service}\n"
             runner.upload_text(f"{path}/docker-compose.yml", compose)
             _ensure_compose_images(runner, compose)
+            publish(config_id, "Starting compose stack", stage="compose")
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
         # Bind the resources to this config only after the link is up: a crash
         # before this point leaves live state without a reservation, which the
@@ -714,6 +734,7 @@ PersistentKeepalive = 15
                 compose = f"services:\n{svc}\n"
                 runner.upload_text(f"{path}/docker-compose.yml", compose)
                 _ensure_compose_images(runner, compose)
+                publish(config_id, "Starting compose stack", stage="compose")
                 podman_compose_up(runner, path, _compose_project_at(config_id, path))
             return ExitEndpoint(host=hop.server_host, port=55424), client_conf
         return self._deploy_wg_exit(runner, path, config_id, hop)
@@ -745,6 +766,7 @@ AllowedIPs = 10.77.0.2/32
         runner.upload_text(f"{path}/relay.key", relay_priv, 0o600)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         client_conf = f"""[Interface]
 PrivateKey = {relay_priv}
@@ -768,6 +790,7 @@ PersistentKeepalive = 15
         compose = f"services:\n{compose_service(container, path, service_name='openvpn-exit')}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         provision_openvpn_instance(runner, path, container, transport)
         return ExitEndpoint(host=hop.server_host, port=1194)
@@ -795,6 +818,7 @@ Log err file /dev/null
         runner.upload_text(f"{path}/torrc", torrc, mode=0o644)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         # Tor accepts arbitrary SOCKS passwords: enforce auth in an Xray front.
         return self._deploy_xray_relay(
@@ -847,8 +871,9 @@ Log err file /dev/null
             compose = f"services:\n{svc}\n"
             runner.upload_text(f"{path}/docker-compose.yml", compose)
             _ensure_compose_images(runner, compose)
+            publish(config_id, "Starting compose stack", stage="compose")
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
-        meta = {"hostAwg": use_host}
+        meta: dict[str, Any] = {"hostAwg": use_host}
         if svc:
             meta["_awg_svc"] = svc
         return client_conf, path, meta
@@ -875,7 +900,7 @@ Log err file /dev/null
             services.append(entry_awg_svc)
             bypass_meta["hostAwg"] = False
         link_downstream = bool(downstream and isinstance(downstream.link_client_conf, str) and downstream.link_client_conf)
-        if link_downstream:
+        if link_downstream and downstream:
             self._deploy_exit_link(runner, path, config_id, downstream, entry_if=entry_if)
             # No local DNS gateway is started for a directly forwarded VPN entry.
             client_conf = client_conf.replace("DNS = 10.9.1.1", "DNS = 1.1.1.1")
@@ -907,6 +932,7 @@ Log err file /dev/null
                 compose += "\nvolumes:\n  tor-data:\n"
             _ensure_compose_images(runner, compose)
             runner.upload_text(f"{path}/docker-compose.yml", compose)
+            publish(config_id, "Starting compose stack", stage="compose")
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
 
         return client_conf, path, bypass_meta
@@ -947,7 +973,7 @@ Log err file /dev/null
         client_conf = ""
         services: list[str] = []
         link_downstream = bool(downstream and isinstance(downstream.link_client_conf, str) and downstream.link_client_conf)
-        if link_downstream:
+        if link_downstream and downstream:
             self._deploy_exit_link(runner, path, config_id, downstream, entry_if=entry_if)
         use_gateway = entry_needs_gateway(plan, downstream is not None, local_tor) and not link_downstream
 
@@ -1028,6 +1054,7 @@ Log err file /dev/null
             runner.upload_text(f"{path}/docker-compose.yml", compose)
             if entry.protocol == "openvpn":
                 ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
+            publish(config_id, "Starting compose stack", stage="compose")
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
             if entry.protocol == "openvpn":
                 ensure_openvpn_image(runner)
@@ -1453,6 +1480,7 @@ Log err file /dev/null
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         if entry.protocol == "openvpn" or exit_hop.protocol == "openvpn":
             ensure_openvpn_port_free(runner, chain_tag=self._resource_tag(config_id))
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         ensure_openvpn_image(runner)
         if entry.protocol == "openvpn":
@@ -1671,9 +1699,10 @@ Log err file /dev/null
         compose = f"services:\n{gw_svc}\nvolumes:\n  tor-data:\n"
         _ensure_compose_images(runner, compose)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         host = runner.target.host if hop else "127.0.0.1"
-        if entry_subnet:
+        if entry_subnet or not relay_account:
             return ExitEndpoint(host=host, port=XRAY_SOCKS_PORT, via_tor=True)
         return ExitEndpoint(host=host, port=XRAY_SOCKS_PORT, auth_user=relay_account["user"], auth_pass=relay_account["pass"])
 
@@ -1701,6 +1730,7 @@ Log err file /dev/null
         runner.upload_text(f"{path}/config.json", json.dumps(xray_cfg, indent=2))
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         account = xray_cfg["inbounds"][0]["settings"]["accounts"][0]
         return ExitEndpoint(host=hop.server_host, port=self._listener_port(XRAY_SOCKS_PORT),
@@ -1747,6 +1777,7 @@ Log err file /dev/null
             compose = f"services:\n{svc}\n"
             runner.upload_text(f"{path}/docker-compose.yml", compose)
             _ensure_compose_images(runner, compose)
+            publish(config_id, "Starting compose stack", stage="compose")
             podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return client_conf, path
 
@@ -1792,6 +1823,7 @@ PersistentKeepalive = 15
         runner.upload_text(f"{path}/wg0.conf", wg_conf, 0o600)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
         _ensure_compose_images(runner, compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return client_conf, path
 
@@ -1982,6 +2014,7 @@ PersistentKeepalive = 15
         compose = f"services:\n{service}\n"
         _ensure_compose_images(runner, compose)
         runner.upload_text(f"{path}/docker-compose.yml", compose)
+        publish(config_id, "Starting compose stack", stage="compose")
         podman_compose_up(runner, path, _compose_project_at(config_id, path))
         return client_conf, path
 

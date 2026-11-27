@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger("hoplyra.routing_zones")
 
@@ -134,7 +135,7 @@ def fetch_and_calculate_bypass_ru(cache_dir: Path | None = None) -> str:
             ]
         if len(lines) < 1000:
             raise ValueError(f"Downloaded ru.zone contains too few entries ({len(lines)}), potential truncation or empty response")
-        parsed_nets = [ipaddress.ip_network(l) for l in lines]
+        parsed_nets = [ipaddress.IPv4Network(l) for l in lines if ":" not in l]
         collapsed = list(ipaddress.collapse_addresses(parsed_nets))
         inverted = _build_inverted_tree(collapsed)
         if len(inverted) < _MIN_INVERTED_ENTRIES:

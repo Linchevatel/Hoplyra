@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Callable
 
-from hoplyra import db
+from hoplyra import db, deploy_log
 from hoplyra.chains.deployer import ChainDeployer
 from hoplyra.chains.preflight import recheck_runners_online
 from hoplyra.config_lifecycle import stop_remote_config
@@ -235,10 +235,18 @@ def _mark_deploy_failed(
     server_target: Callable[[Any], ServerTarget],
     touched_server_ids: list[str] | None = None,
 ) -> None:
+    cancelled = isinstance(error, DeployCancelled) or error == "Deploy cancelled"
     message = str(error).strip()[:500] or "Deploy failed"
+    deploy_log.publish(
+        config_id,
+        "Deployment cancelled by user" if cancelled else f"Deployment failed: {message}",
+        level="warn" if cancelled else "error",
+        stage="cancelled" if cancelled else "error",
+    )
     with connect() as conn:
         cfg = conn.execute("SELECT * FROM configs WHERE id = ?", (config_id,)).fetchone()
     if not cfg:
+        deploy_log.mark_finished(config_id, False)
         return
 
     cfg_dict = dict(cfg)
@@ -287,10 +295,14 @@ def _mark_deploy_failed(
                     "UPDATE configs SET meta_json=? WHERE id=?",
                     (json.dumps(meta2), config_id),
                 )
+    deploy_log.mark_finished(config_id, False)
 
 
 def _run_deploy_job(config_id: str, runner: Callable[[], None]) -> None:
     register_active_deploy(config_id)
+    deploy_log.clear(config_id)
+    deploy_log.mark_active(config_id)
+    deploy_log.publish(config_id, "Deployment started")
     stopped = threading.Event()
 
     def heartbeat() -> None:
@@ -307,7 +319,18 @@ def _run_deploy_job(config_id: str, runner: Callable[[], None]) -> None:
             claim_deploy(conn, config_id)
         _stamp_deploy_job(config_id)
         pulse.start()
-        runner()
+        with deploy_log.deploy_context(config_id):
+            runner()
+        if not deploy_log.status(config_id)["finished"]:
+            deploy_log.publish(config_id, "Deployment completed successfully", level="success", stage="finish")
+            deploy_log.mark_finished(config_id, True)
+    except BaseException as exc:
+        if not deploy_log.status(config_id)["finished"]:
+            # Exception strings may embed whole commands, configs or unlabeled secrets.
+            err_detail = str(exc).strip()[:300]
+            deploy_log.publish(config_id, f"Deployment aborted: {err_detail or 'execution error'}", level="error", stage="error")
+            deploy_log.mark_finished(config_id, False)
+        raise
     finally:
         stopped.set()
         if pulse.ident is not None:
@@ -335,6 +358,7 @@ def run_single_deploy_job(
 ) -> None:
     def _job() -> None:
         try:
+            deploy_log.publish(config_id, f"Deploying {protocol.upper()} on server {host}", stage="init")
             deployer = get_deployer(protocol, transport=transport, xray_bypass=xray_bypass)
             runner = RemoteRunner(target)
             with connect() as conn:
@@ -392,7 +416,8 @@ def _start_deploy_thread(name: str, target: Callable[..., None], kwargs: dict[st
         try:
             target(**kwargs)
         finally:
-            _unregister_thread(thread)
+            if thread is not None:
+                _unregister_thread(thread)
 
     config_id = kwargs["config_id"]
     register_active_deploy(config_id)
@@ -479,6 +504,8 @@ def run_chain_deploy_job(
         touched_server_ids: list[str] = []
 
         def on_server_touched(server_id: str) -> None:
+            srv_host = runners[server_id].target.host if server_id in runners else server_id
+            deploy_log.publish(config_id, f"Initializing chain server {srv_host}", stage="chain")
             if server_id not in touched_server_ids:
                 touched_server_ids.append(server_id)
             with connect() as conn:
@@ -509,6 +536,7 @@ def run_chain_deploy_job(
                 meta["touchedServerIds"] = []
                 conn.execute("UPDATE configs SET meta_json=? WHERE id=?",
                              (json.dumps(meta), config_id))
+            deploy_log.publish(config_id, f"Deploying {len(hops)}-hop chain: {' -> '.join(h.get('protocol', '').upper() for h in hops)}", stage="chain")
             deployer = ChainDeployer(str(DATA_DIR))
             result = deployer.deploy(runners, plan, config_id,
                                      on_hop_status=on_hop_statuses,

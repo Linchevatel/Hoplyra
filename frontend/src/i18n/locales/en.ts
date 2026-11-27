@@ -1,6 +1,11 @@
 import type { TranslationTree } from '../types'
 
 export const en: TranslationTree = {
+  deployLog: {
+    title: 'Deploy', collapse: 'Collapse', expand: 'Expand', copy: 'Copy log', copied: 'Copied',
+    toLatest: 'To latest', empty: 'Waiting for deploy events…', open: 'Open deploy log',
+    status: { deploying: 'Deploying…', ok: 'Done', error: 'Error', cancelled: 'Cancelled' },
+  },
   awg: {
     mode: "AWG mode",
     automaticParameters: "Automatic parameters",

@@ -133,18 +133,21 @@ def wait_for_tun_interface(runner: RemoteRunner, *, timeout_sec: int = 180) -> s
     last_diag = ""
     for _ in range(max(1, timeout_sec // 2)):
         _, out, _ = runner.run(
-            "ip -o link show type tun 2>/dev/null | awk -F': ' '{print $2}' | head -1"
+            "ip -o link show type tun 2>/dev/null | awk -F': ' '{print $2}' | head -1",
+            silent=True,
         )
         name = out.strip().split("@")[0]
         if name:
             _, ipout, _ = runner.run(
-                f"ip -4 addr show dev {name} 2>/dev/null | grep -F 'inet ' || true"
+                f"ip -4 addr show dev {name} 2>/dev/null | grep -F 'inet ' || true",
+                silent=True,
             )
             if ipout.strip():
                 return name
         _, last_diag, _ = runner.run(
             "pgrep -a openvpn 2>/dev/null | head -3; "
-            "ss -tln 2>/dev/null | grep ':9050 ' || true"
+            "ss -tln 2>/dev/null | grep ':9050 ' || true",
+            silent=True,
         )
         time.sleep(2)
     raise RuntimeError(
@@ -160,10 +163,11 @@ def _runtime_cmd(runner: RemoteRunner, container: str, script: str) -> str:
 def wait_for_container(runner: RemoteRunner, name: str, timeout_sec: int = 120) -> None:
     for _ in range(max(1, timeout_sec // 2)):
         code, out, _ = runner.run(
-            f"podman ps --format '{{{{.Names}}}}' 2>/dev/null | grep -Fx '{name}' || true"
+            f"podman ps --format '{{{{.Names}}}}' 2>/dev/null | grep -Fx '{name}' || true",
+            silent=True,
         )
         if name in out.splitlines():
-            code, _, _ = runner.run(f"podman exec {name} true 2>/dev/null")
+            code, _, _ = runner.run(f"podman exec {name} true 2>/dev/null", silent=True)
             if code == 0:
                 return
         time.sleep(2)

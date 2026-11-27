@@ -1,3 +1,6 @@
+import { DeployLogDrawer } from '@/components/dashboard/DeployLogDrawer'
+import { useDeployLogDrawer } from '@/lib/deploy-log-context'
+import { useDashboard } from '@/lib/dashboard-context'
 import { AppIcon, type AppIconName } from '@/components/ui/AppIcon'
 import { Link, useLocation } from 'react-router-dom'
 import {
@@ -154,6 +157,8 @@ function SidebarNav({
 }
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const { configs, servers } = useDashboard()
+  const { open: openDeployLog } = useDeployLogDrawer()
   const { t } = useI18n()
   const { logout } = useAuth()
   const navigate = useNavigate()
@@ -215,6 +220,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
+      <DeployLogDrawer />
       <div className="flex-1 flex flex-col min-h-screen">
         <header className="dashboard-header sticky top-0 z-30 flex items-center h-14 px-4 sm:px-6 lg:px-8 border-b border-white/5 bg-surface-950/80 backdrop-blur-xl gap-3">
           <button
@@ -228,6 +234,20 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <Logo size="sm" showText={false} className="lg:hidden shrink-0" />
 
           <div className="flex-1" />
+          {configs.filter((config) => config.status === 'deploying' && !config.id.startsWith('pending-')).map((config) => {
+            const hops = config.hops ?? []
+            const isChain = hops.length >= 2
+            const title = isChain ? hops.map((h) => h.protocol.toUpperCase()).join(' → ') : config.protocol.toUpperCase()
+            const subtitle = servers.find((server) => server.id === config.serverId)?.name ?? config.serverId
+            return (
+              <button key={config.id} type="button" title={t('deployLog.open')}
+                className="rounded-full bg-amber-500/10 text-amber-300 px-3 py-1 text-xs cursor-pointer hover:bg-amber-500/20 transition-colors flex items-center gap-1.5"
+                onClick={() => openDeployLog(config.id, { title, subtitle })}>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                {title} · {t('deployLog.status.deploying')}
+              </button>
+            )
+          })}
 
           <div className="flex items-center gap-2 shrink-0">
             <LanguageSwitcher />

@@ -102,7 +102,7 @@ def _remove_wal_sidecars() -> None:
         sidecar.unlink(missing_ok=True)
 
 
-def restore_db_backup(source: Path) -> tuple[Path, Path]:
+def restore_db_backup(source: Path) -> tuple[Path | None, Path]:
     source = source.resolve()
     _validate_hoplyra_db(source)
 
@@ -125,7 +125,7 @@ def restore_db_backup(source: Path) -> tuple[Path, Path]:
     return pre_restore, source
 
 
-def restore_db_backup_by_name(name: str) -> tuple[Path, Path]:
+def restore_db_backup_by_name(name: str) -> tuple[Path | None, Path]:
     return restore_db_backup(resolve_backup_name(name))
 
 

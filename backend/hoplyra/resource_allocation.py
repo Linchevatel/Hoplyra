@@ -2,6 +2,7 @@
 import ipaddress
 import json
 import re
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -48,7 +49,7 @@ def allocate(conn, server_id, protocol, runner):
     port = next((p for p in range(base, end) if p not in ports), None)
     if port is None:
         raise HTTPException(409, f'Нет свободных портов для {protocol} в пуле {base}–{end - 1}')
-    result = {'listenPort': port}
+    result: dict[str, Any] = {'listenPort': port}
     prefix, start = {'wg': ('10.66', 66), 'awg': ('10.9', 1), 'openvpn': ('10.8', 0)}.get(protocol, (None, 0))
     if prefix:
         subnet = next((f'{prefix}.{i}.0/24' for i in range(start, 255)

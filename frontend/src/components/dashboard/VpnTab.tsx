@@ -20,11 +20,13 @@ import { ClientConfigModal } from '@/components/dashboard/ClientConfigModal'
 import { ClientConfigButton } from '@/components/dashboard/ClientConfigButton'
 import { AnimatedRemoveWrapper } from '@/components/dashboard/AnimatedRemoveWrapper'
 import { useI18n } from '@/i18n/i18n-context'
+import { useDeployLogDrawer } from '@/lib/deploy-log-context'
 import { resolveSelectedServer } from '@/lib/selection'
 import { getChainLockedServerIds, isServerLockedByActiveChain } from '@/lib/chain-utils'
 
 export function VpnTab() {
   const { t } = useI18n()
+  const { open: openDeployLog } = useDeployLogDrawer()
   const { servers, configs, deployProtocol, stopConfig, restartConfig, deletingConfigIds, updateConfig, removeConfig, removingConfigIds } =
     useDashboard()
   const [selectedServer, setSelectedServer] = useState('')
@@ -311,7 +313,21 @@ export function VpnTab() {
                         : (PROTOCOLS[activeConfig.protocol]?.label ?? activeConfig.protocol)}
                     </p>
                   </div>
-                  <Badge variant="warning">{t('common.deploying')}</Badge>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeConfig.id.startsWith('pending-')) return
+                      const serverName = servers.find((s) => s.id === selectedServer)?.name ?? selectedServer
+                      openDeployLog(activeConfig.id, {
+                        title: (PROTOCOLS[activeConfig.protocol]?.label ?? activeConfig.protocol.toUpperCase()),
+                        subtitle: serverName,
+                      })
+                    }}
+                    className="cursor-pointer"
+                    title={t('deployLog.open')}
+                  >
+                    <Badge variant="warning">{t('common.deploying')}</Badge>
+                  </button>
                   <Button
                     variant="secondary"
                     size="sm"

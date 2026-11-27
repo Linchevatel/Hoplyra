@@ -36,6 +36,7 @@ import { resolveChainDeployProgress } from '@/lib/chain-deploy-ui'
 import { readPendingChainDeploy } from '@/lib/deploy-recover'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/i18n/i18n-context'
+import { useDeployLogDrawer } from '@/lib/deploy-log-context'
 
 function TemplateHopIcons({ hops, compact }: { hops: Protocol[]; compact?: boolean }) {
   return (
@@ -128,6 +129,7 @@ export function ChainsTab() {
     removeConfig,
     removingConfigIds,
   } = useDashboard()
+  const { open: openDeployLog } = useDeployLogDrawer()
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -252,12 +254,48 @@ export function ChainsTab() {
             )}
 
             {deployProgress && (
-              <ChainDeployStatusBar
-                hops={deployProgress.hops}
-                servers={servers}
-                hopStatuses={deployProgress.hopStatuses}
-                className="mt-4"
-              />
+              <div
+                role="button"
+                tabIndex={0}
+                className="cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent-cyan/50 rounded-xl"
+                title={t('deployLog.open')}
+                onClick={() => {
+                  const active = configs.find(
+                    (c) =>
+                      c.status === 'deploying' &&
+                      !c.id.startsWith('pending-') &&
+                      ((c.hops?.length ?? 0) >= 2 || (chainDeployUi?.configId && c.id === chainDeployUi.configId))
+                  )
+                  if (active) {
+                    const title = deployProgress.hops.map((h) => h.protocol.toUpperCase()).join(' → ')
+                    const subtitle = servers.find((s) => s.id === deployProgress.hops[0]?.serverId)?.name ?? ''
+                    openDeployLog(active.id, { title, subtitle })
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    const active = configs.find(
+                      (c) =>
+                        c.status === 'deploying' &&
+                        !c.id.startsWith('pending-') &&
+                        ((c.hops?.length ?? 0) >= 2 || (chainDeployUi?.configId && c.id === chainDeployUi.configId))
+                    )
+                    if (active) {
+                      const title = deployProgress.hops.map((h) => h.protocol.toUpperCase()).join(' → ')
+                      const subtitle = servers.find((s) => s.id === deployProgress.hops[0]?.serverId)?.name ?? ''
+                      openDeployLog(active.id, { title, subtitle })
+                    }
+                  }
+                }}
+              >
+                <ChainDeployStatusBar
+                  hops={deployProgress.hops}
+                  servers={servers}
+                  hopStatuses={deployProgress.hopStatuses}
+                  className="mt-4"
+                />
+              </div>
             )}
 
             {justDeployedChain && justDeployedChain.status === 'active' && justDeployedChain.id !== dismissedConfigId && (

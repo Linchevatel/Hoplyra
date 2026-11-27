@@ -19,19 +19,36 @@
         'error',
         function (e) {
           if (e.target && e.target.tagName === 'SCRIPT') {
-            document.body.innerHTML =
-              '<div style="font-family:Inter,sans-serif;background:var(--color-surface-950,#0D1117);color:#e4e4e7;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center">' +
-              '<div><h1 style="font-size:20px;margin:0 0 12px">Hoplyra failed to load</h1>' +
-              '<p style="margin:0 0 8px;color:#a1a1aa">Browser cache may be outdated after an update.</p>' +
-              '<p style="margin:0;color:#71717a">Press <b>Ctrl+Shift+R</b> (or Cmd+Shift+R on Mac) to hard refresh.</p></div></div>'
+            // Build DOM nodes; never inject markup into the document.
+            var box = document.createElement('div')
+            box.setAttribute(
+              'style',
+              'font-family:Inter,sans-serif;background:var(--color-surface-950,#0D1117);color:#e4e4e7;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center',
+            )
+            var inner = document.createElement('div')
+            var title = document.createElement('h1')
+            title.setAttribute('style', 'font-size:20px;margin:0 0 12px')
+            title.textContent = 'Hoplyra failed to load'
+            var cache = document.createElement('p')
+            cache.setAttribute('style', 'margin:0 0 8px;color:#a1a1aa')
+            cache.textContent = 'Browser cache may be outdated after an update.'
+            var hint = document.createElement('p')
+            hint.setAttribute('style', 'margin:0;color:#71717a')
+            hint.append('Press ')
+            var key = document.createElement('b')
+            key.textContent = 'Ctrl+Shift+R'
+            hint.append(key, ' (or Cmd+Shift+R on Mac) to hard refresh.')
+            inner.append(title, cache, hint)
+            box.append(inner)
+            document.body.replaceChildren(box)
           }
         },
         true,
       )
     </script>
-    <script type="module" crossorigin src="/assets/index-B3w8W9EI.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/Card-Cch5BTAF.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-Ao6Xba7c.css">
+    <script type="module" crossorigin src="/assets/index-D47nJNzm.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/Card-0woY0VXR.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-9BddjT0R.css">
   </head>
   <body>
     <div id="root"></div>

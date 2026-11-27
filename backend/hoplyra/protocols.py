@@ -13,6 +13,7 @@ from typing import Any
 
 from hoplyra.container_images import ensure_image
 from hoplyra.db import DATA_DIR
+from hoplyra.deploy_log import publish
 from hoplyra.remote import RemoteRunner, mkdir_remote, nat_postdown, nat_postup, podman_compose_down, podman_compose_up
 from hoplyra.wg_keys import generate_wg_keypair, generate_wg_psk
 from hoplyra.wg_runtime import compose_wg_service, ensure_wg_image
@@ -80,11 +81,14 @@ class WireGuardDeployer(ProtocolDeployer):
     listen_port = 51820
 
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        publish(config_id, "Generating WireGuard keys and configuration", stage="config")
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
         resources = kwargs.get("resources") or {}
+        publish(config_id, "Searching for free UDP listen port and IP subnet", stage="network")
         port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
         subnet = resources.get("subnet") or "10.66.66.0/24"
+        publish(config_id, f"Allocated port {port}, subnet {subnet}", stage="network")
         prefix = subnet.rsplit(".", 1)[0]
         client_ip = f"{prefix}.2"
         interface = f"wg_{config_id[:8]}"
@@ -115,12 +119,15 @@ PersistentKeepalive = 15
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-wg-{config_id[:8]}"
         conf_path = f"{path}/{interface}.conf"
+        publish(config_id, "Preparing WireGuard container image", stage="image")
         ensure_wg_image(runner)
         mkdir_remote(runner, path)
         runner.upload_text(conf_path, wg_conf, 0o600)
         compose = f"services:\n{compose_wg_service(container, conf_path, cap_sys_module=True, interface=interface)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
+        publish(config_id, f"Starting WireGuard container {container}", stage="compose")
         podman_compose_up(runner, path, self.compose_project(config_id))
+        publish(config_id, f"WireGuard container {container} is running on UDP port {port}", stage="verify", level="success")
         return DeployResult(
             client_config=client_conf,
             container_name=container,
@@ -131,7 +138,7 @@ PersistentKeepalive = 15
 
 def _find_free_udp_port(runner: RemoteRunner, base_port: int = 55424) -> int:
     used: set[int] = set()
-    _, out1, _ = runner.run("ss -ulpn 2>/dev/null", timeout=30)
+    _, out1, _ = runner.run("ss -ulpn 2>/dev/null", timeout=30, silent=True)
     for line in out1.splitlines():
         parts = line.split()
         if len(parts) >= 4:
@@ -141,21 +148,21 @@ def _find_free_udp_port(runner: RemoteRunner, base_port: int = 55424) -> int:
                     used.add(int(addr.rsplit(":", 1)[-1]))
                 except ValueError:
                     pass
-    _, out2, _ = runner.run("awg show 2>/dev/null | grep 'listening port'", timeout=30)
+    _, out2, _ = runner.run("awg show 2>/dev/null | grep 'listening port'", timeout=30, silent=True)
     for line in out2.splitlines():
         match = re.search(r"listening port:\s*(\d+)", line)
         if match:
             used.add(int(match.group(1)))
-    _, out3, _ = runner.run("wg show 2>/dev/null | grep 'listening port'", timeout=30)
+    _, out3, _ = runner.run("wg show 2>/dev/null | grep 'listening port'", timeout=30, silent=True)
     for line in out3.splitlines():
         match = re.search(r"listening port:\s*(\d+)", line)
         if match:
             used.add(int(match.group(1)))
-    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30)
+    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30, silent=True)
     for name in re.findall(r"^\d+:\s+((?:awg|wg)[\w.-]*)(?:@[^:]+)?:", links, re.M):
         for tool in ("awg", "wg"):
             _, output, _ = runner.run(
-                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30
+                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30, silent=True
             )
             if output.strip().isdigit():
                 used.add(int(output.strip()))
@@ -197,6 +204,8 @@ class AmneziaWGDeployer(ProtocolDeployer):
         else:
             ver_label = "awg2.0"
 
+        publish(config_id, f"Generating AmneziaWG ({ver_label}) keys and parameters", stage="config")
+
         if isinstance(custom_params, AwgObfuscationParams):
             awg = custom_params
         elif isinstance(custom_params, dict):
@@ -207,12 +216,14 @@ class AmneziaWGDeployer(ProtocolDeployer):
         check_awg_params_valid(awg, awg_version=ver_label)
 
         resources = kwargs.get("resources") or {}
+        publish(config_id, "Searching for free UDP listen port and IP subnet", stage="network")
         port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
         server_ip_cidr, client_ip, subnet = _find_free_awg_subnet(runner)
         if resources.get("subnet"):
             subnet = resources["subnet"]
             prefix = subnet.rsplit(".", 1)[0]
             server_ip_cidr, client_ip = f"{prefix}.1/24", f"{prefix}.2"
+        publish(config_id, f"Allocated port {port}, subnet {subnet}", stage="network")
 
         server_priv, server_pub = generate_wg_keypair()
         client_priv, client_pub = generate_wg_keypair()
@@ -262,6 +273,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
             mkdir_remote(runner, path)
 
             # 1. First probe if the kernel module is available on the system
+            publish(config_id, "Probing AmneziaWG kernel module on host", stage="awg")
             c_probe, _, _ = runner.run("modprobe amneziawg 2>/dev/null && echo ok")
             if c_probe == 0:
                 try:
@@ -272,6 +284,7 @@ class AmneziaWGDeployer(ProtocolDeployer):
             c_mod, _, _ = runner.run("modprobe amneziawg 2>/dev/null && command -v awg-quick >/dev/null && echo ok")
             use_host_kernel = (c_mod == 0)
 
+            publish(config_id, "Starting AmneziaWG (native host kernel)" if use_host_kernel else "Starting AmneziaWG (container mode)", stage="awg")
             if use_host_kernel:
                 runner.upload_text(conf_path, awg_conf, 0o600)
                 try:
@@ -290,13 +303,16 @@ class AmneziaWGDeployer(ProtocolDeployer):
                     port = new_port
                     runner.upload_text(conf_path, awg_conf, 0o600)
                     awg_quick_up(runner, conf_path)
+                publish(config_id, f"AmneziaWG interface {interface} is UP on UDP port {port}", stage="verify", level="success")
             else:
                 # Always in container via hoplyra-awg:1
                 compose = f"services:\n{compose_awg_service(container, conf_path, interface=interface)}\n"
                 runner.upload_text(f"{path}/docker-compose.yml", compose)
                 runner.upload_text(conf_path, awg_conf, 0o600)
+                publish(config_id, "Preparing AmneziaWG container image", stage="image")
                 ensure_awg_image(runner)
                 try:
+                    publish(config_id, f"Starting AmneziaWG container {container}", stage="compose")
                     podman_compose_up(runner, path, self.compose_project(config_id))
                 except RuntimeError:
                     cleanup(remove_dir=False)
@@ -312,7 +328,9 @@ class AmneziaWGDeployer(ProtocolDeployer):
                     compose = f"services:\n{compose_awg_service(container, conf_path, interface=interface)}\n"
                     runner.upload_text(f"{path}/docker-compose.yml", compose)
                     runner.upload_text(conf_path, awg_conf, 0o600)
+                    publish(config_id, f"Starting AmneziaWG container {container}", stage="compose")
                     podman_compose_up(runner, path, self.compose_project(config_id))
+                publish(config_id, f"AmneziaWG container {container} is running on UDP port {port}", stage="verify", level="success")
         except Exception:
             cleanup(remove_dir=True)
             raise
@@ -368,22 +386,28 @@ class OpenVPNDeployer(ProtocolDeployer):
         return build_client_ovpn(runner, path, server_host, self.transport, self.listen_port)
 
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        publish(config_id, f"Generating OpenVPN ({self.transport.upper()}) configuration and certificates", stage="config")
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-openvpn-{config_id[:8]}"
 
         resources = kwargs.get("resources") or {}
+        publish(config_id, f"Searching for free port for OpenVPN {self.transport.upper()}", stage="network")
         self.listen_port = resources.get("listenPort") or _find_free_udp_port(runner, self.listen_port)
         subnet = resources.get("subnet", "10.8.0.0/24")
         interface = f"tun_{config_id[:8]}"
+        publish(config_id, f"Allocated port {self.listen_port}/{self.transport}, subnet {subnet}", stage="network")
+        publish(config_id, "Preparing OpenVPN container image", stage="image")
         ensure_openvpn_image(runner)
         mkdir_remote(runner, path)
         runner.upload_text(f"{path}/server.conf", server_conf_content(self.transport, self.listen_port).replace("dev tun\n", f"dev {interface}\ndev-type tun\n").replace("server 10.8.0.0", f"server {subnet.partition('/')[0]}"))
 
         compose = f"services:\n{compose_service(container, path, subnet=subnet)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
+        publish(config_id, f"Starting OpenVPN container {container}", stage="compose")
         podman_compose_up(runner, path, self.compose_project(config_id))
 
         provision_openvpn_instance(runner, path, container, self.transport, listen_port=self.listen_port)
+        publish(config_id, f"OpenVPN service is running on port {self.listen_port}/{self.transport}", stage="verify", level="success")
 
         client_conf = self._build_client_ovpn(runner, path, server_host)
         return DeployResult(
@@ -396,7 +420,7 @@ class OpenVPNDeployer(ProtocolDeployer):
 
 def _find_free_tcp_port(runner: RemoteRunner, base_port: int = 443) -> int:
     used: set[int] = set()
-    _, out, _ = runner.run("ss -tlpn 2>/dev/null", timeout=30)
+    _, out, _ = runner.run("ss -tlpn 2>/dev/null", timeout=30, silent=True)
     for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 4:
@@ -406,18 +430,18 @@ def _find_free_tcp_port(runner: RemoteRunner, base_port: int = 443) -> int:
                     used.add(int(addr.rsplit(":", 1)[-1]))
                 except ValueError:
                     pass
-    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30)
+    _, links, _ = runner.run("ip -o link show 2>/dev/null", timeout=30, silent=True)
     for name in re.findall(r"^\d+:\s+((?:awg|wg)[\w.-]*)(?:@[^:]+)?:", links, re.M):
         for tool in ("awg", "wg"):
             _, output, _ = runner.run(
-                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30
+                f"{tool} show {shlex.quote(name)} listen-port 2>/dev/null", timeout=30, silent=True
             )
             if output.strip().isdigit():
                 used.add(int(output.strip()))
     for port in range(base_port, 449):
         if port not in used:
             return port
-    raise RuntimeError("Нет свободных портов Xray в пуле 443–448")
+    raise RuntimeError("No free Xray ports available in range 443-448")
 
 
 class XrayDeployer(ProtocolDeployer):
@@ -428,21 +452,27 @@ class XrayDeployer(ProtocolDeployer):
         self.bypass = bypass
 
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        publish(config_id, "Generating Xray VLESS Reality configuration and keypair", stage="config")
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-xray-{config_id[:8]}"
 
+        publish(config_id, "Searching for free TCP port in 443-448 pool", stage="network")
         port = (kwargs.get("resources") or {}).get("listenPort") or _find_free_tcp_port(runner, self.listen_port)
+        publish(config_id, f"Allocated listening port {port}/tcp", stage="network")
         xray_config, client_text, meta, _secrets = format_bypass_client_bundle(
             server_host,
             config_id,
             port=port,
         )
         mkdir_remote(runner, path)
+        publish(config_id, "Preparing Xray container image", stage="image")
         ensure_xray_image(runner)
         runner.upload_text(f"{path}/config.json", json.dumps(xray_config, indent=2))
         compose = f"services:\n{compose_xray_service(container, path)}\n"
         runner.upload_text(f"{path}/docker-compose.yml", compose)
+        publish(config_id, f"Starting Xray container {container}", stage="compose")
         podman_compose_up(runner, path, self.compose_project(config_id))
+        publish(config_id, f"Xray container {container} is running on port {port}/tcp", stage="verify", level="success")
         return DeployResult(
             client_config=client_text,
             container_name=container,
@@ -577,16 +607,20 @@ class Hysteria2Deployer(ProtocolDeployer):
     listen_port = 443
 
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        publish(config_id, "Generating Hysteria 2 configuration and self-signed certificate", stage="config")
         path = _instance_dir(config_id, runner.target.is_local)
         container = f"cv-hy2-{config_id[:8]}"
         port = (kwargs.get("resources") or {}).get("listenPort") or find_hysteria2_port(runner, self.listen_port)
+        publish(config_id, f"Allocated port {port}/udp", stage="network")
         config, service, client, meta, (cert_pem, key_pem) = hysteria2_bundle(path, container, server_host, port)
         mkdir_remote(runner, path)
+        publish(config_id, "Preparing Hysteria 2 container image", stage="image")
         ensure_image(runner, "hoplyra-hysteria2:1", "hysteria2")
         runner.upload_text(f"{path}/server.crt", cert_pem, 0o644)
         runner.upload_text(f"{path}/server.key", key_pem, 0o600)
         runner.upload_text(f"{path}/config.yaml", config, 0o600)
         runner.upload_text(f"{path}/docker-compose.yml", "services:\n" + service)
+        publish(config_id, f"Starting Hysteria 2 container {container}", stage="compose")
         podman_compose_up(runner, path, self.compose_project(config_id))
         return DeployResult(client, container, path, meta)
 

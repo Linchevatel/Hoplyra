@@ -555,7 +555,10 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
         if not meta.get("username") and not meta.get("password"):
             raise ValueError("Hysteria 2 primary password missing")
         pub_key, client_conf = _create_hysteria2_peer(cfg, runner, name.strip())
-        psk = json.loads(re.search(r"^auth: (.+)$", client_conf, re.MULTILINE).group(1)).split(":", 1)[1]
+        auth_match = re.search(r"^auth: (.+)$", client_conf, re.MULTILINE)
+        if not auth_match:
+            raise ValueError("Failed to parse auth from Hysteria 2 client config")
+        psk = json.loads(auth_match.group(1)).split(":", 1)[1]
         client_ip = pub_key
         if not meta.get("username"):
             primary_password = meta.get("password")

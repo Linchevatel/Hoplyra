@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import ipaddress
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -18,6 +19,7 @@ from typing import Iterator
 
 import paramiko
 
+from hoplyra.deploy_log import publish_current, _redact
 from hoplyra.host_setup import ensure_host_ready, get_runtime_info, container_runtime_ready
 
 _LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain"})
@@ -289,8 +291,7 @@ def _run_ssh_subprocess(target: ServerTarget, command: str, timeout: int) -> tup
 @contextmanager
 def ssh_client(target: ServerTarget) -> Iterator[paramiko.SSHClient]:
     if target.is_local:
-        yield None                      
-        return
+        raise ValueError("ssh_client cannot be used for local targets")
 
     last_exc: Exception | None = None
     with _SSH_GATE:
@@ -318,11 +319,111 @@ def ssh_client(target: ServerTarget) -> Iterator[paramiko.SSHClient]:
         raise last_exc
 
 
+def describe_command(cmd: str) -> str | None:
+    """Only describe an allowlisted executable/subcommand; never echo arguments."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(words) < 2:
+        return None
+    allowed = {
+        "podman": {"build", "pull", "load", "compose", "restart", "rm", "exec", "ps"},
+        "docker": {"build", "pull", "load", "compose", "restart", "rm", "exec", "ps"},
+        "podman-compose": {"up", "down", "build", "pull"},
+        "docker-compose": {"up", "down", "build", "pull"},
+        "apt-get": {"update", "install"},
+        "ip": {"route", "rule", "link", "addr"},
+        "iptables": {"-A", "-I", "-D", "-C", "-t"},
+        "ip6tables": {"-A", "-I", "-D", "-C", "-t"},
+        "awg-quick": {"up", "down"},
+        "wg-quick": {"up", "down"},
+        "systemctl": {"restart", "reload", "start", "stop", "status"},
+    }
+    if words[1] not in allowed.get(words[0], set()):
+        return None
+    return " ".join(words[:2])
+
+
+def format_command_for_log(cmd: str) -> str:
+    """Format and sanitize any executed shell command for live deploy logs."""
+    cleaned = (cmd or "").strip()
+    if not cleaned:
+        return ""
+
+    if "<< 'EOF'" in cleaned or "<< EOF" in cleaned or "\n" in cleaned:
+        if "HOST_AWG" in cleaned or ("apt-get install" in cleaned and "amneziawg" in cleaned):
+            return "bash -s (host AmneziaWG installer)"
+        if "hoplyra-setup" in cleaned:
+            return "bash /tmp/hoplyra-setup.sh (host setup)"
+        first_line = cleaned.splitlines()[0]
+        return _redact(first_line[:60]) + " (...)"
+
+    cleaned = re.sub(r">/dev/null\s*2>&1", "", cleaned)
+    cleaned = re.sub(r"&>/dev/null", "", cleaned)
+    cleaned = re.sub(r"2>/dev/null", "", cleaned)
+    cleaned = re.sub(r">/dev/null", "", cleaned)
+    cleaned = re.sub(r"2>&1", "", cleaned)
+    cleaned = re.sub(r"\|\|\s*true\b", "", cleaned)
+    cleaned = re.sub(r"&&\s*echo\s+ok\b", "", cleaned)
+    cleaned = re.sub(r"&&\s*echo\s+yes\b", "", cleaned)
+    cleaned = re.sub(r"\bcommand\s+-v\b", "which", cleaned)
+
+    cd_match = re.match(r"^cd\s+[^\&]+\s*&&\s*(.*)$", cleaned)
+    if cd_match:
+        cleaned = cd_match.group(1).strip()
+
+    # Strip entire instance directory prefix BEFORE _redact so UUIDs are not mangled
+    cleaned = re.sub(r"/opt/(?:hoplyra|chainvault)/instances/[a-zA-Z0-9_-]+/", "", cleaned)
+
+    # Strip outer parentheses ONLY if fully balanced around the whole command
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        depth = 0
+        enclosed = True
+        for ch in cleaned[:-1]:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    enclosed = False
+                    break
+        if enclosed and depth == 1:
+            cleaned = cleaned[1:-1].strip()
+
+    cleaned = _redact(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.strip(";").strip()
+
+    if len(cleaned) > 130:
+        cleaned = cleaned[:127] + "..."
+    return cleaned
+
+
 class RemoteRunner:
     def __init__(self, target: ServerTarget) -> None:
         self.target = target
 
-    def run(self, command: str, timeout: int = 300, retries: int = 3) -> tuple[int, str, str]:
+    def run(self, command: str, timeout: int = 300, retries: int = 3, *, silent: bool = False) -> tuple[int, str, str]:
+        cmd_desc = None if silent else format_command_for_log(command)
+        if cmd_desc:
+            publish_current(f"Running '{cmd_desc}'", stage="exec")
+
+        def _log_result(code: int, out: str, err: str) -> None:
+            if not cmd_desc:
+                return
+            if code == 0:
+                out_stripped = out.strip()
+                if out_stripped and "\n" not in out_stripped and len(out_stripped) <= 80:
+                    publish_current(f"-> {out_stripped}", stage="exec")
+                else:
+                    publish_current("-> OK (exit 0)", stage="exec")
+            else:
+                is_probe = "|| true" in command or command.strip().startswith(("test ", "grep ", "which ", "command -v "))
+                if not is_probe:
+                    err_line = (err or out or "unknown error").strip().splitlines()[-1] if (err or out) else f"exit {code}"
+                    publish_current(f"Command failed (exit {code}): {_redact(err_line)[:150]}", stage="exec", level="warn")
+
         if self.target.is_local:
             proc = subprocess.run(
                 ["bash", "-lc", command],
@@ -330,6 +431,7 @@ class RemoteRunner:
                 text=True,
                 timeout=timeout,
             )
+            _log_result(proc.returncode, proc.stdout, proc.stderr)
             return proc.returncode, proc.stdout, proc.stderr
 
         last_exc: Exception | None = None
@@ -342,9 +444,12 @@ class RemoteRunner:
                     out = stdout.read().decode(errors="replace")
                     err = stderr.read().decode(errors="replace")
                     code = stdout.channel.recv_exit_status()
+                    _log_result(code, out, err)
                     return code, out, err
             except (TimeoutError, paramiko.SSHException, OSError) as exc:
                 if submitted:
+                    if cmd_desc:
+                        publish_current(f"Command error: {str(exc)[:120]}", stage="exec", level="error")
                     raise RuntimeError("SSH command outcome unknown after submission; not retried") from exc
                 last_exc = exc
                 if attempt + 1 < retries:
@@ -353,7 +458,9 @@ class RemoteRunner:
 
         if _ssh_subprocess_available(self.target):
             try:
-                return _run_ssh_subprocess(self.target, command, timeout=timeout)
+                res = _run_ssh_subprocess(self.target, command, timeout=timeout)
+                _log_result(res[0], res[1], res[2])
+                return res
             except (TimeoutError, OSError, subprocess.SubprocessError) as exc:
                 last_exc = exc
 
@@ -361,6 +468,8 @@ class RemoteRunner:
         raise last_exc
 
     def upload_text(self, remote_path: str, content: str, mode: int = 0o600) -> None:
+        filename = remote_path.rsplit("/", 1)[-1]
+        publish_current(f"Writing configuration {filename} ({len(content)} bytes)", stage="config")
         if self.target.is_local:
             from pathlib import Path
 
@@ -386,6 +495,9 @@ class RemoteRunner:
         src = Path(local_path)
         if not src.is_file():
             raise FileNotFoundError(str(src))
+
+        filename = remote_path.rsplit("/", 1)[-1]
+        publish_current(f"Uploading file {filename} ({src.stat().st_size} bytes)", stage="config")
 
         if self.target.is_local:
             dst = Path(remote_path)
@@ -498,9 +610,10 @@ def prepare_host(runner: RemoteRunner) -> None:
 
 
 def ensure_podman(runner: RemoteRunner) -> None:
+    publish_current("Verifying container runtime environment", stage="runtime")
     ensure_host_ready(runner)
     if not container_runtime_ready(runner):
-        raise RuntimeError("Podman/Docker Compose недоступен после подготовки VPS")
+        raise RuntimeError("Podman/Docker Compose unavailable after host setup")
 
 
 def detect_wan_iface_script() -> str:
@@ -564,19 +677,19 @@ def nat_postdown(subnet: str, iface_var: str = detect_wan_iface_script()) -> str
 
 def _detect_compose_runtime(runner: RemoteRunner) -> str:
     """Return podman-compose, podman compose, or docker compose — whichever is available."""
-    code, out, _ = runner.run("(docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && echo ok) || true")
+    code, out, _ = runner.run("(docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && echo ok) || true", timeout=30, silent=True)
     if "ok" in out:
         return "docker compose"
-    code, _, _ = runner.run("podman compose version >/dev/null 2>&1")
+    code, _, _ = runner.run("podman compose version >/dev/null 2>&1", timeout=30, silent=True)
     if code == 0:
         return "podman compose"
-    code, _, _ = runner.run("command -v podman-compose >/dev/null 2>&1")
+    code, _, _ = runner.run("command -v podman-compose >/dev/null 2>&1", timeout=30, silent=True)
     if code == 0:
         return "podman-compose"
-    code, _, _ = runner.run("docker compose version >/dev/null 2>&1")
+    code, _, _ = runner.run("docker compose version >/dev/null 2>&1", timeout=30, silent=True)
     if code == 0:
         return "docker compose"
-    raise RuntimeError("Podman/Docker Compose недоступен на VPS")
+    raise RuntimeError("Podman/Docker Compose unavailable on VPS")
 
 
 def podman_compose_up(runner: RemoteRunner, workdir: str, project_name: str) -> None:
@@ -587,6 +700,7 @@ def podman_compose_up(runner: RemoteRunner, workdir: str, project_name: str) -> 
         mkdir_remote(runner, workdir)
     project_q = shlex.quote(project_name)
     runtime = _detect_compose_runtime(runner)
+    publish_current(f"Deploying compose stack ({runtime})", stage="compose")
     if runtime == "podman compose":
         cmd = f"cd {workdir_q} && podman compose -p {project_q} up -d --remove-orphans"
     elif runtime == "podman-compose":
@@ -596,10 +710,13 @@ def podman_compose_up(runner: RemoteRunner, workdir: str, project_name: str) -> 
     code, out, err = runner.run(cmd, timeout=900)
     if code != 0:
         detail = (err or out or "unknown error").strip()
+        publish_current(f"Compose failed: {detail[:200]}", stage="compose", level="error")
         raise RuntimeError(f"compose up failed ({runtime}): {detail}")
+    publish_current(f"Compose stack deployed ({runtime})", stage="compose")
 
 
 def podman_compose_down(runner: RemoteRunner, workdir: str, project_name: str, *, timeout: int = 120) -> None:
+    publish_current(f"Stopping compose stack in {workdir}", stage="compose")
     workdir_q = shell_path(workdir)
     project_q = shlex.quote(project_name)
     cmd = (
@@ -614,7 +731,7 @@ def podman_compose_down(runner: RemoteRunner, workdir: str, project_name: str, *
 def wait_for_remote_file(runner: RemoteRunner, path: str, attempts: int = 36, delay_sec: int = 5) -> bool:
     path_q = shlex.quote(path)
     for _ in range(attempts):
-        code, out, _ = runner.run(f"test -f {path_q} && echo yes")
+        code, out, _ = runner.run(f"test -f {path_q} && echo yes", silent=True)
         if code == 0 and "yes" in out:
             return True
         time.sleep(delay_sec)
