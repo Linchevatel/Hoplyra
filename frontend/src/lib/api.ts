@@ -1,5 +1,5 @@
 import { assertAwg, versionParams, type AwgParams } from './awg'
-import type { ChainHop, OpenVpnTransport, Protocol, RouteTestResult, ServerMetrics, ServerPrepareProgress, VpnConfig, VpsServer } from './types'
+import type { ChainHop, OpenVpnTransport, Protocol, RealmBroker, RealmTunnel, RealmTunnelConfig, RouteTestResult, ServerMetrics, ServerPrepareProgress, VpnConfig, VpsServer } from './types'
 
 const BASE = import.meta.env?.VITE_API_URL ?? ''
 
@@ -481,6 +481,15 @@ export function applySystemUpdateApi(version?: string): Promise<{ ok: boolean; s
   })
 }
 
+export type SystemUpdateStatus = {
+  inProgress: boolean
+  currentVersion: string
+}
+
+export function getSystemUpdateStatusApi(): Promise<SystemUpdateStatus> {
+  return request<SystemUpdateStatus>('/api/system/update/status')
+}
+
 export function fetchDeployLog(configId: string, since = 0): Promise<import('./deploy-log-state').DeployLogPayload> {
   return request(`/api/configs/${encodeURIComponent(configId)}/deploy-log?since=${since}`)
 }
@@ -488,3 +497,33 @@ export function fetchDeployLog(configId: string, since = 0): Promise<import('./d
 export function deployLogStreamUrl(configId: string, since = 0): string {
   return `${BASE}/api/configs/${encodeURIComponent(configId)}/deploy-log/stream?since=${since}`
 }
+
+export const realmsApi = {
+  getStatus: () => request<{ activeBroker: RealmBroker | null; brokers: RealmBroker[]; tunnels: RealmTunnel[] }>('/api/realms/status'),
+  listBrokers: () => request<RealmBroker[]>('/api/realms/brokers'),
+  deployBroker: (data: { serverId: string; listenPort?: number; token?: string; domainOrIp?: string; asyncDeploy?: boolean }) =>
+    request<RealmBroker>('/api/realms/brokers', { method: 'POST', body: JSON.stringify(data) }),
+  stopBroker: (brokerId: string) =>
+    request<{ status: string }>(`/api/realms/brokers/${brokerId}/stop`, { method: 'POST' }),
+  startBroker: (brokerId: string) =>
+    request<{ status: string }>(`/api/realms/brokers/${brokerId}/start`, { method: 'POST' }),
+  deleteBroker: (brokerId: string) =>
+    request<{ status: string }>(`/api/realms/brokers/${brokerId}`, { method: 'DELETE' }),
+
+  listTunnels: () => request<RealmTunnel[]>('/api/realms/tunnels'),
+  deployTunnel: (data: { serverId: string; name: string; brokerType?: 'public' | 'self_hosted' | 'custom'; customBrokerUrl?: string; realmName?: string; authPassword?: string; asyncDeploy?: boolean }) =>
+    request<RealmTunnel>('/api/realms/tunnels', { method: 'POST', body: JSON.stringify(data) }),
+  stopTunnel: (tunnelId: string) =>
+    request<{ status: string }>(`/api/realms/tunnels/${tunnelId}/stop`, { method: 'POST' }),
+  startTunnel: (tunnelId: string) =>
+    request<{ status: string }>(`/api/realms/tunnels/${tunnelId}/start`, { method: 'POST' }),
+  deleteTunnel: (tunnelId: string) =>
+    request<{ status: string }>(`/api/realms/tunnels/${tunnelId}`, { method: 'DELETE' }),
+  getTunnelConfig: (tunnelId: string) =>
+    request<RealmTunnelConfig>(`/api/realms/tunnels/${tunnelId}/config`),
+  getTunnelLogs: (tunnelId: string, tail?: number) =>
+    request<{ logs: string }>(`/api/realms/tunnels/${tunnelId}/logs${tail ? `?tail=${tail}` : ''}`),
+  getBrokerLogs: (brokerId: string, tail?: number) =>
+    request<{ logs: string }>(`/api/realms/brokers/${brokerId}/logs${tail ? `?tail=${tail}` : ''}`),
+}
+

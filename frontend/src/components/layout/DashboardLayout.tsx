@@ -111,6 +111,7 @@ function SidebarNav({
         { path: '/vpn', label: 'VPN', icon: 'lock' },
         { path: '/chains', label: t('nav.chains'), icon: 'link' },
         { path: '/proxy', label: t('nav.proxy'), icon: 'socks' },
+        { path: '/realms', label: t('nav.realms'), icon: 'realms' },
       ],
     },
     {

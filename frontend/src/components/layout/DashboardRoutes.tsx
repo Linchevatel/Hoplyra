@@ -10,6 +10,7 @@ const VpnTab = lazy(() => import('@/components/dashboard/VpnTab').then((m) => ({
 const ChainsTab = lazy(() => import('@/components/dashboard/ChainsTab').then((m) => ({ default: m.ChainsTab })))
 const ProxyTab = lazy(() => import('@/components/dashboard/ProxyTab').then((m) => ({ default: m.ProxyTab })))
 const ClientConfigsTab = lazy(() => import('@/components/dashboard/ClientConfigsTab').then((m) => ({ default: m.ClientConfigsTab })))
+const HysteriaRealmsTab = lazy(() => import('@/components/dashboard/HysteriaRealmsTab').then((m) => ({ default: m.HysteriaRealmsTab })))
 const SettingsTab = lazy(() => import('@/components/dashboard/SettingsTab').then((m) => ({ default: m.SettingsTab })))
 
 function RouteLoadingFallback() {
@@ -32,6 +33,7 @@ export function DashboardRoutes() {
           <Route path="vpn" element={<VpnTab />} />
           <Route path="chains" element={<ChainsTab />} />
           <Route path="proxy" element={<ProxyTab />} />
+          <Route path="realms" element={<HysteriaRealmsTab />} />
           <Route path="configs" element={<ClientConfigsTab />} />
           <Route path="settings" element={<SettingsTab />} />
           <Route path="*" element={<Navigate to="/" replace />} />

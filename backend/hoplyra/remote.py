@@ -692,18 +692,23 @@ def _detect_compose_runtime(runner: RemoteRunner) -> str:
     raise RuntimeError("Podman/Docker Compose unavailable on VPS")
 
 
-def podman_compose_up(runner: RemoteRunner, workdir: str, project_name: str) -> None:
+def podman_compose_up(
+    runner: RemoteRunner,
+    workdir: str,
+    project_name: str,
+    runtime: str | None = None,
+) -> str:
     ensure_podman(runner)
     workdir_q = shell_path(workdir)
     code, _, _ = runner.run(f"test -d {workdir_q}")
     if code != 0:
         mkdir_remote(runner, workdir)
     project_q = shlex.quote(project_name)
-    runtime = _detect_compose_runtime(runner)
-    publish_current(f"Deploying compose stack ({runtime})", stage="compose")
-    if runtime == "podman compose":
+    effective_runtime = runtime if isinstance(runtime, str) and runtime.strip() else _detect_compose_runtime(runner)
+    publish_current(f"Deploying compose stack ({effective_runtime})", stage="compose")
+    if effective_runtime == "podman compose":
         cmd = f"cd {workdir_q} && podman compose -p {project_q} up -d --remove-orphans"
-    elif runtime == "podman-compose":
+    elif effective_runtime == "podman-compose":
         cmd = f"cd {workdir_q} && podman-compose -f docker-compose.yml -p {project_q} up -d"
     else:
         cmd = f"cd {workdir_q} && docker compose -p {project_q} up -d --remove-orphans"
@@ -711,14 +716,45 @@ def podman_compose_up(runner: RemoteRunner, workdir: str, project_name: str) -> 
     if code != 0:
         detail = (err or out or "unknown error").strip()
         publish_current(f"Compose failed: {detail[:200]}", stage="compose", level="error")
-        raise RuntimeError(f"compose up failed ({runtime}): {detail}")
-    publish_current(f"Compose stack deployed ({runtime})", stage="compose")
+        raise RuntimeError(f"compose up failed ({effective_runtime}): {detail}")
+    publish_current(f"Compose stack deployed ({effective_runtime})", stage="compose")
+    return effective_runtime
 
 
-def podman_compose_down(runner: RemoteRunner, workdir: str, project_name: str, *, timeout: int = 120) -> None:
+def podman_compose_down(
+    runner: RemoteRunner,
+    workdir: str,
+    project_name: str,
+    *,
+    timeout: int = 120,
+    strict: bool = False,
+    runtime: str | None = None,
+) -> None:
     publish_current(f"Stopping compose stack in {workdir}", stage="compose")
     workdir_q = shell_path(workdir)
     project_q = shlex.quote(project_name)
+    if strict:
+        code_d, _, _ = runner.run(f"test -d {workdir_q}", silent=True)
+        if code_d != 0:
+            return
+        effective_runtime = runtime if isinstance(runtime, str) and runtime.strip() else _detect_compose_runtime(runner)
+        if effective_runtime == "podman compose":
+            cmd = f"cd {workdir_q} && podman compose -p {project_q} down"
+        elif effective_runtime == "podman-compose":
+            cmd = f"cd {workdir_q} && podman-compose -f docker-compose.yml -p {project_q} down"
+        elif effective_runtime == "docker compose":
+            cmd = f"cd {workdir_q} && docker compose -p {project_q} down"
+        elif "podman" in str(effective_runtime).lower():
+            cmd = f"cd {workdir_q} && (podman compose -p {project_q} down 2>/dev/null || podman-compose -f docker-compose.yml -p {project_q} down)"
+        else:
+            cmd = f"cd {workdir_q} && docker compose -p {project_q} down"
+        code, out, err = runner.run(cmd, timeout=timeout)
+        if code != 0:
+            detail = (err or out or "unknown error").strip()
+            publish_current(f"Compose down failed: {detail[:200]}", stage="compose", level="error")
+            raise RuntimeError(f"compose down failed ({effective_runtime}): {detail}")
+        return
+
     cmd = (
         f"cd {workdir_q} && "
         f"(podman-compose -f docker-compose.yml -p {project_q} down 2>/dev/null || "
@@ -726,6 +762,7 @@ def podman_compose_down(runner: RemoteRunner, workdir: str, project_name: str, *
         f"docker compose -p {project_q} down 2>/dev/null || true)"
     )
     runner.run(cmd, timeout=timeout)
+
 
 
 def wait_for_remote_file(runner: RemoteRunner, path: str, attempts: int = 36, delay_sec: int = 5) -> bool:

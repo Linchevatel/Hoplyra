@@ -24,6 +24,6 @@ test('app icons are square RGBA PNGs, including all alternative assets', () => {
 test('navigation uses distinct icon artwork for every destination', () => {
   const source = readFileSync(new URL('../src/components/layout/DashboardLayout.tsx', import.meta.url), 'utf8')
   const icons = [...source.matchAll(/icon: '([^']+)'/g)].map((match) => match[1])
-  assert.deepEqual(icons, ['dashboard', 'servers', 'latency2', 'lock', 'link', 'socks', 'global2', 'settings2'])
+  assert.deepEqual(icons, ['dashboard', 'servers', 'latency2', 'lock', 'link', 'socks', 'realms', 'global2', 'settings2'])
   assert.equal(new Set(icons).size, icons.length)
 })

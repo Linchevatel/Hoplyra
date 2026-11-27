@@ -10,6 +10,7 @@ interface DashboardContextValue {
   deployHistory: DeployHistoryEntry[]
   notifications: AppNotification[]
   unreadNotifications: number
+  pushNotification: (n: AppNotification) => void
   setChainDraft: (hops: ChainHop[] | ((prev: ChainHop[]) => ChainHop[])) => void
   saveUserChainTemplate: (name: string, hops: ChainHop[]) => void
   removeUserChainTemplate: (id: string) => void

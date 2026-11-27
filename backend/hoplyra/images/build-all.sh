@@ -6,6 +6,7 @@ IMAGES_DIR="$(cd "$(dirname "$0")" && pwd)"
 CACHE="${HOPLYRA_IMAGE_CACHE:-$BACKEND/.image-cache}"
 MARKER="$CACHE/.ready"
 export PYTHONPATH="$BACKEND"
+PYTHON="${PYTHON_BIN:-python3}"
 
 runtime() {
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then echo docker; return; fi
@@ -35,7 +36,7 @@ else
       need_rebuild=1
       break
     fi
-  done < <(python3 -c "from hoplyra.image_catalog import all_images
+  done < <("$PYTHON" -c "from hoplyra.image_catalog import all_images
 for img, bundle in all_images():
     print(f'{bundle} {img}')")
 fi
@@ -45,18 +46,25 @@ if [[ "$need_rebuild" -eq 0 ]]; then
   exit 0
 fi
 
-echo "[hoplyra-images] сборка образов ($RT) → $CACHE"
+trap 'rm -f "$CACHE"/.tmp_*.$$ 2>/dev/null || true' EXIT
 
 while IFS= read -r line; do
   bundle="${line%% *}"
   image="${line##* }"
   ctx="$IMAGES_DIR/$bundle"
   archive="$CACHE/${image//:/_}.tar.gz"
+  tmp_archive="$CACHE/.tmp_${image//:/_}.tar.gz.$$"
   echo "  → build $image"
   $RT build -t "$image" "$ctx"
   echo "  → save $archive"
-  $RT save "$image" | gzip -9 > "$archive"
-done < <(python3 -c "from hoplyra.image_catalog import all_images
+  rm -f "$tmp_archive"
+  if ! $RT save "$image" | gzip -9 > "$tmp_archive"; then
+    echo "ERROR: Failed to save/compress image $image" >&2
+    rm -f "$tmp_archive"
+    exit 1
+  fi
+  mv -f "$tmp_archive" "$archive"
+done < <("$PYTHON" -c "from hoplyra.image_catalog import all_images
 for img, bundle in all_images():
     print(f'{bundle} {img}')")
 

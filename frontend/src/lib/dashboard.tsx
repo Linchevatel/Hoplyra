@@ -1492,6 +1492,7 @@ function DashboardStateProvider({ children }: { children: ReactNode }) {
         deployHistory,
         notifications,
         unreadNotifications,
+        pushNotification,
         setChainDraft,
         saveUserChainTemplate,
         removeUserChainTemplate,

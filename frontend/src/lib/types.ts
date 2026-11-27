@@ -200,3 +200,46 @@ export interface AuthCredentials {
   password: string
   name?: string
 }
+
+export interface RealmBroker {
+  id: string
+  serverId: string
+  listenPort: number
+  token: string
+  domainOrIp?: string
+  status: 'active' | 'inactive' | 'error' | 'deploying'
+  containerName?: string
+  instancePath?: string
+  createdAt: string
+  meta: Record<string, any>
+}
+
+export interface RealmTunnel {
+  id: string
+  serverId: string
+  name: string
+  realmName: string
+  brokerType: 'public' | 'self_hosted' | 'custom'
+  brokerUrl: string
+  authPassword: string
+  pinSha256: string
+  status: 'active' | 'inactive' | 'error' | 'deploying'
+  containerName?: string
+  instancePath?: string
+  clientConfig?: string
+  createdAt: string
+  meta: {
+    compose_project?: string
+    server_name?: string
+    shareUri?: string
+    realmEndpoint?: string
+    [key: string]: any
+  }
+}
+
+export interface RealmTunnelConfig {
+  yaml: string
+  realmEndpoint: string
+  shareUri: string
+}
+

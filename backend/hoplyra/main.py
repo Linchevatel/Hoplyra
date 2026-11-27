@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -807,6 +808,15 @@ def system_update_apply(body: SystemUpdateApplyRequest | None = None) -> dict[st
     from hoplyra.system_update import apply_update_async
     target = body.version if body else None
     return apply_update_async(target_version=target)
+
+
+@app.get("/api/system/update/status")
+def system_update_status() -> dict[str, Any]:
+    from hoplyra.system_update import is_update_in_progress, get_current_version
+    return {
+        "inProgress": is_update_in_progress(),
+        "currentVersion": get_current_version(),
+    }
 
 
 @app.get("/api/servers")
@@ -1788,7 +1798,11 @@ def _require_deploy_log_config(config_id: str) -> None:
     if deploy_log.exists(config_id):
         return
     with connect() as conn:
-        if not conn.execute("SELECT id FROM configs WHERE id=?", (config_id,)).fetchone():
+        row = conn.execute(
+            "SELECT id FROM configs WHERE id=? UNION SELECT id FROM realms_tunnels WHERE id=? UNION SELECT id FROM realms_brokers WHERE id=?",
+            (config_id, config_id, config_id),
+        ).fetchone()
+        if not row:
             raise HTTPException(404, "Config not found")
 
 
@@ -1958,6 +1972,229 @@ def get_client_config(config_id: str, mode: str | None = None) -> dict[str, str]
     if amnezia_uri:
         res["amneziaVpnUri"] = amnezia_uri
     return res
+
+
+# ---------------------------------------------------------------------------
+# Hysteria Realms (P2P NAT Traversal / Rendezvous & Tunnels)
+# ---------------------------------------------------------------------------
+
+class DeployRealmBrokerRequest(BaseModel):
+    id: uuid.UUID | None = None
+    serverId: str
+    listenPort: int = 8443
+    token: str | None = None
+    domainOrIp: str | None = None
+    asyncDeploy: bool = False
+
+
+class DeployRealmTunnelRequest(BaseModel):
+    id: uuid.UUID | None = None
+    serverId: str
+    name: str
+    brokerType: Literal["public", "self_hosted", "custom"] = "public"
+    customBrokerUrl: str | None = None
+    realmName: str | None = None
+    authPassword: str | None = None
+    asyncDeploy: bool = False
+
+
+@app.get("/api/realms/status")
+def get_realms_status() -> dict[str, Any]:
+    from hoplyra.realms import get_active_broker, list_brokers, list_tunnels
+    return {
+        "activeBroker": get_active_broker(),
+        "brokers": list_brokers(),
+        "tunnels": list_tunnels(),
+    }
+
+
+@app.get("/api/realms/brokers")
+def get_realm_brokers() -> list[dict[str, Any]]:
+    from hoplyra.realms import list_brokers
+    return list_brokers()
+
+
+@app.get("/api/realms/brokers/active")
+def get_active_realm_broker() -> dict[str, Any] | None:
+    from hoplyra.realms import get_active_broker
+    return get_active_broker()
+
+
+@app.post("/api/realms/brokers")
+def create_realm_broker(req: DeployRealmBrokerRequest) -> dict[str, Any]:
+    from hoplyra.realms import deploy_realm_broker
+    row = _get_server_row(req.serverId)
+    runner = RemoteRunner(_server_target(row))
+    try:
+        return deploy_realm_broker(
+            runner=runner,
+            server=row_to_server(row),
+            listen_port=req.listenPort,
+            token=req.token,
+            domain_or_ip=req.domainOrIp,
+            broker_id=str(req.id) if req.id else None,
+            async_deploy=req.asyncDeploy,
+        )
+    except Exception as exc:
+        log.exception("Failed to deploy realm broker: %s", exc)
+        raise HTTPException(500, f"Failed to deploy realm broker: {exc}")
+
+
+@app.post("/api/realms/brokers/{broker_id}/stop")
+def stop_broker(broker_id: str) -> dict[str, Any]:
+    from hoplyra.realms import get_broker_by_id, stop_realm_broker
+    broker = get_broker_by_id(broker_id)
+    if not broker:
+        raise HTTPException(404, "Broker not found")
+    row = _get_server_row(broker["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    stop_realm_broker(broker_id, runner)
+    return {"status": "ok"}
+
+
+@app.post("/api/realms/brokers/{broker_id}/start")
+def start_broker(broker_id: str) -> dict[str, Any]:
+    from hoplyra.realms import get_broker_by_id, start_realm_broker
+    broker = get_broker_by_id(broker_id)
+    if not broker:
+        raise HTTPException(404, "Broker not found")
+    row = _get_server_row(broker["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    start_realm_broker(broker_id, runner)
+    return {"status": "ok"}
+
+
+@app.delete("/api/realms/brokers/{broker_id}")
+def delete_broker(broker_id: str) -> dict[str, Any]:
+    from hoplyra.realms import delete_realm_broker, get_broker_by_id
+    broker = get_broker_by_id(broker_id)
+    if not broker:
+        raise HTTPException(404, "Broker not found")
+    row = _get_server_row(broker["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    try:
+        delete_realm_broker(broker_id, runner)
+        return {"status": "ok"}
+    except Exception as exc:
+        log.exception("Failed to delete broker: %s", exc)
+        raise HTTPException(500, f"Failed to delete broker: {exc}")
+
+
+@app.get("/api/realms/tunnels")
+def get_realm_tunnels() -> list[dict[str, Any]]:
+    from hoplyra.realms import list_tunnels
+    return list_tunnels()
+
+
+@app.get("/api/realms/tunnels/{tunnel_id}")
+def get_realm_tunnel(tunnel_id: str) -> dict[str, Any]:
+    from hoplyra.realms import get_tunnel_by_id
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    return tunnel
+
+
+@app.post("/api/realms/tunnels")
+def create_realm_tunnel(req: DeployRealmTunnelRequest) -> dict[str, Any]:
+    from hoplyra.realms import deploy_realm_tunnel
+    row = _get_server_row(req.serverId)
+    runner = RemoteRunner(_server_target(row))
+    try:
+        return deploy_realm_tunnel(
+            runner=runner,
+            server=row_to_server(row),
+            name=req.name,
+            broker_type=req.brokerType,
+            custom_broker_url=req.customBrokerUrl,
+            realm_name=req.realmName,
+            auth_password=req.authPassword,
+            tunnel_id=str(req.id) if req.id else None,
+            async_deploy=req.asyncDeploy,
+        )
+    except Exception as exc:
+        log.exception("Failed to deploy realm tunnel: %s", exc)
+        raise HTTPException(500, f"Failed to deploy realm tunnel: {exc}")
+
+
+@app.post("/api/realms/tunnels/{tunnel_id}/stop")
+def stop_tunnel(tunnel_id: str) -> dict[str, Any]:
+    from hoplyra.realms import get_tunnel_by_id, stop_realm_tunnel
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    row = _get_server_row(tunnel["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    stop_realm_tunnel(tunnel_id, runner)
+    return {"status": "ok"}
+
+
+@app.post("/api/realms/tunnels/{tunnel_id}/start")
+def start_tunnel(tunnel_id: str) -> dict[str, Any]:
+    from hoplyra.realms import get_tunnel_by_id, start_realm_tunnel
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    row = _get_server_row(tunnel["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    start_realm_tunnel(tunnel_id, runner)
+    return {"status": "ok"}
+
+
+@app.delete("/api/realms/tunnels/{tunnel_id}")
+def delete_tunnel(tunnel_id: str) -> dict[str, Any]:
+    from hoplyra.realms import delete_realm_tunnel, get_tunnel_by_id
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    row = _get_server_row(tunnel["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    try:
+        delete_realm_tunnel(tunnel_id, runner)
+        return {"status": "ok"}
+    except Exception as exc:
+        log.exception("Failed to delete tunnel: %s", exc)
+        raise HTTPException(500, f"Failed to delete tunnel: {exc}")
+
+
+@app.get("/api/realms/tunnels/{tunnel_id}/config")
+def get_tunnel_config(tunnel_id: str) -> dict[str, Any]:
+    from hoplyra.realms import build_tunnel_client_material, get_tunnel_by_id
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    materials = build_tunnel_client_material(
+        broker_url=tunnel["brokerUrl"],
+        realm_name=tunnel["realmName"],
+        auth_password=tunnel["authPassword"],
+        pin_sha256=tunnel["pinSha256"],
+        tunnel_name=tunnel["name"],
+    )
+    return materials
+
+
+@app.get("/api/realms/tunnels/{tunnel_id}/logs")
+def get_realm_tunnel_logs(tunnel_id: str, tail: int = 150) -> dict[str, str]:
+    from hoplyra.realms import get_tunnel_by_id, get_tunnel_logs
+    tunnel = get_tunnel_by_id(tunnel_id)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    row = _get_server_row(tunnel["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    logs = get_tunnel_logs(tunnel_id, runner, tail=tail)
+    return {"logs": logs}
+
+
+@app.get("/api/realms/brokers/{broker_id}/logs")
+def get_realm_broker_logs(broker_id: str, tail: int = 150) -> dict[str, str]:
+    from hoplyra.realms import get_broker_by_id, get_broker_logs
+    broker = get_broker_by_id(broker_id)
+    if not broker:
+        raise HTTPException(404, "Broker not found")
+    row = _get_server_row(broker["serverId"])
+    runner = RemoteRunner(_server_target(row))
+    logs = get_broker_logs(broker_id, runner, tail=tail)
+    return {"logs": logs}
 
 
 def _frontend_dist() -> Path | None:

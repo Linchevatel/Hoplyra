@@ -74,6 +74,38 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 revoked_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS realms_brokers (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                listen_port INTEGER NOT NULL DEFAULT 8443,
+                token TEXT NOT NULL,
+                domain_or_ip TEXT,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                container_name TEXT,
+                instance_path TEXT,
+                runtime TEXT,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS realms_tunnels (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                realm_name TEXT NOT NULL,
+                broker_type TEXT NOT NULL DEFAULT 'public',
+                broker_url TEXT NOT NULL,
+                auth_password TEXT NOT NULL,
+                pin_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                container_name TEXT,
+                instance_path TEXT,
+                runtime TEXT,
+                client_config TEXT,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
             """
         )
     with connect() as conn:
@@ -94,6 +126,23 @@ def init_db() -> None:
             conn.execute("ALTER TABLE panel_auth ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
         if "totp_last_step" not in auth_cols:
             conn.execute("ALTER TABLE panel_auth ADD COLUMN totp_last_step INTEGER")
+        broker_cols = {r["name"] for r in conn.execute("PRAGMA table_info(realms_brokers)")}
+        if "runtime" not in broker_cols:
+            conn.execute("ALTER TABLE realms_brokers ADD COLUMN runtime TEXT")
+        tunnel_cols = {r["name"] for r in conn.execute("PRAGMA table_info(realms_tunnels)")}
+        if "runtime" not in tunnel_cols:
+            conn.execute("ALTER TABLE realms_tunnels ADD COLUMN runtime TEXT")
+        for table in ("realms_brokers", "realms_tunnels"):
+            rows = conn.execute(f"SELECT id, meta_json FROM {table} WHERE runtime IS NULL AND meta_json IS NOT NULL").fetchall()
+            for r in rows:
+                try:
+                    meta = json.loads(r["meta_json"] or "{}")
+                    rt = meta.get("runtime")
+                    if rt and isinstance(rt, str) and rt.strip():
+                        conn.execute(f"UPDATE {table} SET runtime = ? WHERE id = ?", (rt.strip(), r["id"]))
+                except Exception:
+                    pass
+
     migrate_auth_secrets()
     from hoplyra.panel_auth import ensure_default_admin
 
@@ -177,6 +226,46 @@ def row_to_config(row: sqlite3.Row) -> dict[str, Any]:
         if match:
             result["vlessUri"] = match.group(0)
     return result
+
+
+def row_to_realm_broker(row: sqlite3.Row) -> dict[str, Any]:
+    meta = json.loads(row["meta_json"] or "{}")
+    runtime = row["runtime"] if "runtime" in row.keys() and row["runtime"] else meta.get("runtime")
+    return {
+        "id": row["id"],
+        "serverId": row["server_id"],
+        "listenPort": row["listen_port"],
+        "token": row["token"],
+        "domainOrIp": row["domain_or_ip"],
+        "status": row["status"],
+        "containerName": row["container_name"],
+        "instancePath": row["instance_path"],
+        "runtime": runtime,
+        "createdAt": row["created_at"],
+        "meta": meta,
+    }
+
+
+def row_to_realm_tunnel(row: sqlite3.Row) -> dict[str, Any]:
+    meta = json.loads(row["meta_json"] or "{}")
+    runtime = row["runtime"] if "runtime" in row.keys() and row["runtime"] else meta.get("runtime")
+    return {
+        "id": row["id"],
+        "serverId": row["server_id"],
+        "name": row["name"],
+        "realmName": row["realm_name"],
+        "brokerType": row["broker_type"],
+        "brokerUrl": row["broker_url"],
+        "authPassword": row["auth_password"],
+        "pinSha256": row["pin_sha256"],
+        "status": row["status"],
+        "containerName": row["container_name"],
+        "instancePath": row["instance_path"],
+        "clientConfig": row["client_config"],
+        "runtime": runtime,
+        "createdAt": row["created_at"],
+        "meta": meta,
+    }
 
 
 def new_id() -> str:

@@ -22,10 +22,10 @@ import {
   applySystemUpdateApi,
   changePasswordApi,
   checkSystemUpdateApi,
+  getSystemUpdateStatusApi,
   disable2faApi,
   downloadDbBackupApi,
   enable2faApi,
-  fetchAuthMe,
   fetchDbBackupInfo,
   restoreDbBackupApi,
   restoreDbBackupUploadApi,
@@ -126,18 +126,24 @@ export function SettingsTab() {
         return
       }
       let attempts = 0
+      let sawProgressOrReboot = false
       const timer = setInterval(async () => {
         attempts++
         try {
-          const res = await fetchAuthMe()
-          if (res && attempts > 2) {
+          const status = await getSystemUpdateStatusApi()
+          if (status?.inProgress) {
+            sawProgressOrReboot = true
+          } else if (sawProgressOrReboot || attempts > 5) {
+            // Update finished and process exited
             clearInterval(timer)
             window.location.reload()
+            return
           }
         } catch {
-          // restarting
+          // backend temporarily offline during systemctl restart
+          sawProgressOrReboot = true
         }
-        if (attempts > 60) {
+        if (attempts > 180) {
           clearInterval(timer)
           setApplyingUpdate(false)
           setUpdateError('Update timeout. Please refresh manually or check server logs.')

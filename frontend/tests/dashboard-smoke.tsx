@@ -24,7 +24,9 @@ const dashboard = {
   checkCensorServerById: async () => {}, checkCensorAllServers: async () => {}, censorChecking: false,
   saveUserChainTemplate: noop, removeUserChainTemplate: noop, markNotificationRead: noop,
   markAllNotificationsRead: noop, dismissNotification: noop, clearAllNotifications: noop,
+  pushNotification: noop,
 }
+
 const auth = { username: 'test', defaultPassword: false, authenticated: true, authRequired: true, loading: false, twoFactorEnabled: false, login: async () => ({ twoFactorRequired: false }), logout: async () => {}, refresh: async () => {} }
 
 const servers: VpsServer[] = [

@@ -1,5 +1,6 @@
 # python / backend
-backend/.venv/
+backend/.venv*/
+.venv*/
 backend/data/
 .image-cache/
 __pycache__/
@@ -17,6 +18,8 @@ backend/tests/*
 !backend/tests/test_chain_failure_recovery.py
 !backend/tests/test_chain_repeated_visits.py
 !backend/tests/test_config_lifecycle.py
+!backend/tests/test_system_update.py
+!backend/tests/test_hysteria_realms.py
 backend/scripts/*
 !backend/scripts/bootstrap-env.sh
 !backend/scripts/generate-ssl.sh
