@@ -326,10 +326,10 @@ export const ru: TranslationTree = {
       bestFor: 'Максимальная скорость, мобильный 4G/5G, плохой канал',
       traits: ['QUIC (UDP)', 'Игнорирование потерь', 'Port Hopping'],
     },
-    tuic: {
-      description: 'Низколатентный QUIC-протокол с мультиплексированием BBR',
-      bestFor: 'Мгновенный отклик, веб-серфинг, 0-RTT',
-      traits: ['QUIC (UDP)', 'Zero-RTT', 'BBR мультиплексирование'],
+    shadowquic: {
+      description: '0-RTT QUIC-прокси с JLS-маскировкой под TLS SNI без серверных сертификатов',
+      bestFor: 'Обход активного DPI, быстрый UDP/QUIC-канал, 0-RTT',
+      traits: ['QUIC (UDP)', 'JLS SNI-маскировка', 'Zero-RTT'],
     },
   },
   scenario: {

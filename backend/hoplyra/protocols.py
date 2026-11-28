@@ -68,8 +68,11 @@ class ProtocolDeployer(ABC):
     def compose_project(self, config_id: str) -> str:
         return f"cv-{self.protocol}-{config_id[:8]}"
 
-    def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
-        podman_compose_down(runner, instance_path, self.compose_project(config_id))
+    def stop(self, runner: RemoteRunner, config_id: str, instance_path: str, *, runtime: str | None = None, **kwargs: Any) -> None:
+        if runtime:
+            podman_compose_down(runner, instance_path, self.compose_project(config_id), strict=True, runtime=runtime)
+        else:
+            podman_compose_down(runner, instance_path, self.compose_project(config_id))
 
     @abstractmethod
     def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
@@ -357,10 +360,10 @@ class AmneziaWGDeployer(ProtocolDeployer):
             },
         )
 
-    def stop(self, runner: RemoteRunner, config_id: str, instance_path: str) -> None:
+    def stop(self, runner: RemoteRunner, config_id: str, instance_path: str, *, runtime: str | None = None, **kwargs: Any) -> None:
         container = f"cv-awg-{config_id[:8]}"
         conf_name = f"awg_{config_id[:8]}.conf"
-        podman_compose_down(runner, instance_path, self.compose_project(config_id), timeout=30)
+        podman_compose_down(runner, instance_path, self.compose_project(config_id), timeout=30, runtime=runtime)
         runner.run(
             f"podman rm -f {shlex.quote(container)} 2>/dev/null || docker rm -f {shlex.quote(container)} 2>/dev/null || true; "
             f"awg-quick down {shlex.quote(instance_path)}/{conf_name} 2>/dev/null || true; "
@@ -624,9 +627,169 @@ class Hysteria2Deployer(ProtocolDeployer):
         podman_compose_up(runner, path, self.compose_project(config_id))
         return DeployResult(client, container, path, meta)
 
+
+def find_shadowquic_port(runner: RemoteRunner, base_port: int = 443) -> int:
+    return find_hysteria2_port(runner, base_port)
+
+
+def shadowquic_bundle(path: str, container: str, host: str, port: int, *,
+                      host_network: bool = False, socks_port: int | None = None,
+                      service: str = "shadowquic",
+                      sni: str = "cloudflare.com") -> tuple[str, str, str, dict[str, Any]]:
+    """Build ShadowQUIC server YAML, compose service, client YAML+URI, and metadata."""
+    from urllib.parse import quote as url_quote
+
+    username = "primary"
+    password = secrets.token_urlsafe(16)
+    bind_addr = f"[::]:{port}" if (host_network and ":" in host) else f"0.0.0.0:{port}"
+    users_json = json.dumps([{"username": username, "password": password}])
+    upstream_addr = f"{sni}:443"
+
+    if socks_port is not None:
+        outbounds_block = f"""outbounds:
+  - tag: chain
+    type: socks
+    addr: {json.dumps(f"127.0.0.1:{socks_port}")}
+router:
+  default-outbound: chain
+"""
+    else:
+        outbounds_block = """outbounds:
+  - tag: direct-outbound
+    type: direct
+    dns-strategy: prefer-ipv4
+router:
+  default-outbound: direct-outbound
+"""
+
+    config = f"""inbounds:
+  - tag: shadowquic-inbound
+    type: shadowquic
+    bind-addr: {json.dumps(bind_addr)}
+    users: {users_json}
+    jls-upstream:
+      addr: {json.dumps(upstream_addr)}
+    alpn: ["h3"]
+    congestion-control: bbr
+    zero-rtt: false
+{outbounds_block}log-level: "info"
+"""
+    network = '    network_mode: host\n' if host_network else f'    ports:\n      - "{port}:{port}/udp"\n'
+    compose = f"""  {service}:
+    image: hoplyra-shadowquic:1
+    container_name: {container}
+    restart: unless-stopped
+{network}    volumes:
+      - {json.dumps(path + ":/etc/shadowquic")}
+"""
+    endpoint = f"{endpoint_host(host)}:{port}"
+    uri = (
+        f"sq://{url_quote(username, safe='')}:{url_quote(password, safe='')}@{endpoint}"
+        f"?sni={url_quote(sni, safe='')}&alpn=h3&udp_mode=datagram&congestion=bbr#Hoplyra-SQ"
+    )
+    client = f"""# {uri}
+# JLS SNI camouflage (no server TLS certificate needed).
+inbounds:
+  - tag: socks-inbound
+    type: socks
+    bind-addr: "127.0.0.1:1080"
+outbounds:
+  - tag: shadowquic-outbound
+    type: shadowquic
+    addr: {json.dumps(endpoint)}
+    username: {json.dumps(username)}
+    password: {json.dumps(password)}
+    server-name: {json.dumps(sni)}
+    alpn: ["h3"]
+    initial-mtu: 1300
+    congestion-control: bbr
+    zero-rtt: false
+    over-stream: false
+"""
+    meta = {
+        "port": port,
+        "listenPort": port,
+        "password": password,
+        "username": username,
+        "sni": sni,
+        "protocol": "shadowquic",
+    }
+    return config, compose, client, meta
+
+
+def _wait_shadowquic_ready(
+    runner: RemoteRunner,
+    container: str,
+    port: int,
+    *,
+    path: str,
+    project: str,
+    runtime: str | None = None,
+    timeout: int = 15,
+) -> None:
+    rt_bin = "docker" if (runtime and "docker" in runtime) else "podman"
+    container_q = shlex.quote(container)
+    port_num = int(port)
+    check_cmd = (
+        f"for i in $(seq 1 {int(timeout * 2)}); do "
+        f"  info=$({rt_bin} inspect -f '{{{{.State.Status}}}} {{{{.State.Pid}}}}' {container_q} 2>/dev/null || echo missing); "
+        f"  status=${{info%% *}}; "
+        f"  pid=${{info#* }}; "
+        f"  if [ \"$status\" = 'exited' ] || [ \"$status\" = 'dead' ]; then "
+        f"    exit 2; "
+        f"  fi; "
+        f"  if [ \"$status\" = 'running' ] && [ -n \"$pid\" ] && [ \"$pid\" -gt 0 ] 2>/dev/null; then "
+        f"    if nsenter -t \"$pid\" -n ss -H -lun 'sport = :{port_num}' 2>/dev/null | grep -q .; then "
+        f"      exit 0; "
+        f"    fi; "
+        f"  fi; "
+        f"  sleep 0.5; "
+        f"done; "
+        f"exit 1"
+    )
+    code, _, _ = runner.run(check_cmd, timeout=timeout + 5)
+    if code != 0:
+        _, logs, _ = runner.run(f"{rt_bin} logs --tail 50 {container_q} 2>/dev/null", timeout=10)
+        logs_detail = logs.strip() if logs else "container exited or UDP port not open"
+        cleanup_error = ""
+        try:
+            podman_compose_down(runner, path, project, strict=True, runtime=runtime)
+        except Exception as exc:
+            cleanup_error = f"; cleanup failed: {exc}"
+        raise RuntimeError(
+            f"ShadowQUIC failed readiness check ({rt_bin}, port {port}/udp): {logs_detail}{cleanup_error}"
+        )
+
+
+class ShadowQuicDeployer(ProtocolDeployer):
+    protocol = "shadowquic"
+    listen_port = 443
+
+    def deploy(self, runner: RemoteRunner, config_id: str, server_host: str, **kwargs: Any) -> DeployResult:
+        publish(config_id, "Generating ShadowQUIC configuration (JLS SNI camouflage)", stage="config")
+        path = _instance_dir(config_id, runner.target.is_local)
+        container = f"cv-sq-{config_id[:8]}"
+        port = (kwargs.get("resources") or {}).get("listenPort") or find_shadowquic_port(runner, self.listen_port)
+        publish(config_id, f"Allocated port {port}/udp", stage="network")
+        config, service, client, meta = shadowquic_bundle(path, container, server_host, port)
+        mkdir_remote(runner, path)
+        publish(config_id, "Preparing ShadowQUIC container image", stage="image")
+        ensure_image(runner, "hoplyra-shadowquic:1", "shadowquic")
+        runner.upload_text(f"{path}/config.yaml", config, 0o600)
+        runner.upload_text(f"{path}/docker-compose.yml", "services:\n" + service)
+        publish(config_id, f"Starting ShadowQUIC container {container}", stage="compose")
+        project = self.compose_project(config_id)
+        runtime = podman_compose_up(runner, path, project)
+        meta["runtime"] = runtime
+        publish(config_id, f"Verifying ShadowQUIC readiness on port {port}/udp", stage="compose")
+        _wait_shadowquic_ready(runner, container, port, path=path, project=project, runtime=runtime)
+        return DeployResult(client, container, path, meta)
+
+
 DEPLOYERS: dict[str, ProtocolDeployer] = {
     "wg": WireGuardDeployer(),
     "hysteria2": Hysteria2Deployer(),
+    "shadowquic": ShadowQuicDeployer(),
     "awg": AmneziaWGDeployer(),
     "xray": XrayDeployer(),
 }

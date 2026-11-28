@@ -65,20 +65,74 @@ def check_runtime(cfg, runner):
         if any(timestamps):
             return "alive", "Interface up, port listening (clients idle)"
         return "alive", "Interface up, port listening (no clients yet)"
-    if protocol not in ("xray", "openvpn", "tor", "hysteria2"):
+    if protocol not in ("xray", "openvpn", "tor", "hysteria2", "shadowquic"):
         return "degraded", "Unsupported health probe"
-    container_protocol = "hy2" if protocol == "hysteria2" else protocol
+    container_protocol = "hy2" if protocol == "hysteria2" else ("sq" if protocol == "shadowquic" else protocol)
     container = cfg.get("container_name") or f"cv-{container_protocol}-{cfg['id'][:8]}"
-    code, out, _ = runner.run("podman ps --format '{{.Names}}' 2>/dev/null || docker ps --format '{{.Names}}' 2>/dev/null", timeout=20, retries=1)
-    if code or container not in out.splitlines():
-        return "down", "VPN container is not running"
+    runtime = meta.get("runtime") or cfg.get("runtime")
     port = meta.get("listenPort") or (9050 if protocol == "tor" else None)
+
+    def _ss_line_matches_port(line: str, target_port: int, *, udp_only: bool = False) -> bool:
+        parts = line.split()
+        if len(parts) < 5:
+            return False
+        if parts[0] in ("UNCONN", "LISTEN", "ESTAB"):
+            if udp_only and parts[0] == "LISTEN":
+                return False
+            local_addr = parts[3]
+        else:
+            if udp_only and parts[0] != "udp":
+                return False
+            local_addr = parts[4]
+        return local_addr.rsplit(":", 1)[-1] == str(target_port)
+
+    if protocol == "shadowquic":
+        q_cont = quote(container)
+        if runtime and "docker" in runtime:
+            cmd = f"docker inspect -f '{{{{.State.Status}}}} {{{{.State.Pid}}}}' {q_cont} 2>/dev/null"
+        elif runtime and "podman" in runtime:
+            cmd = f"podman inspect -f '{{{{.State.Status}}}} {{{{.State.Pid}}}}' {q_cont} 2>/dev/null"
+        else:
+            cmd = (
+                f"podman inspect -f '{{{{.State.Status}}}} {{{{.State.Pid}}}}' {q_cont} 2>/dev/null || "
+                f"docker inspect -f '{{{{.State.Status}}}} {{{{.State.Pid}}}}' {q_cont} 2>/dev/null"
+            )
+        code, out, _ = runner.run(cmd, timeout=20, retries=1)
+        parts = out.strip().split()
+        if code or not parts or parts[0].lower() != "running":
+            return "down", "VPN container is not running"
+        if not port:
+            return "degraded", "Listen port metadata unavailable"
+        pid = parts[1] if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) > 0 else None
+        if not pid:
+            return "down", "VPN container PID unavailable"
+        code, out, _ = runner.run(
+            f"nsenter -t {quote(pid)} -n ss -H -lun 'sport = :{int(port)}'",
+            timeout=20,
+            retries=1,
+        )
+        if code:
+            return "down", "Cannot inspect listening ports"
+        if any(_ss_line_matches_port(line, int(port), udp_only=True) for line in out.splitlines()):
+            return "alive", "Container running and port listening"
+        return "down", "VPN port is not listening"
+
+    if runtime and "docker" in runtime:
+        cmd = "docker ps --format '{{.Names}}'"
+    elif runtime and "podman" in runtime:
+        cmd = "podman ps --format '{{.Names}}'"
+    else:
+        cmd = "podman ps --format '{{.Names}}' 2>/dev/null || docker ps --format '{{.Names}}' 2>/dev/null"
+    code, out, _ = runner.run(cmd, timeout=20, retries=1)
+    if code or container not in [line.strip() for line in out.splitlines()]:
+        return "down", "VPN container is not running"
     if not port:
         return "degraded", "Listen port metadata unavailable"
-    code, out, _ = runner.run("ss -H -lntu", timeout=20, retries=1)
+    ss_flags = "-H -lun" if protocol == "hysteria2" else "-H -lntu"
+    code, out, _ = runner.run(f"ss {ss_flags}", timeout=20, retries=1)
     if code:
         return "down", "Cannot inspect listening ports"
-    if any(len(parts := line.split()) > 4 and parts[4].rsplit(":", 1)[-1] == str(port) for line in out.splitlines()):
+    if any(_ss_line_matches_port(line, int(port), udp_only=(protocol == "hysteria2")) for line in out.splitlines()):
         return "alive", "Container running and port listening"
     return "down", "VPN port is not listening"
 

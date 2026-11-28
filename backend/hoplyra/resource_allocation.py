@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-DEFAULT_PORTS = {'wg': 51820, 'awg': 55424, 'xray': 443, 'hysteria2': 443, 'openvpn': 1194}
+DEFAULT_PORTS = {'wg': 51820, 'awg': 55424, 'xray': 443, 'hysteria2': 443, 'shadowquic': 443, 'openvpn': 1194}
 
 
 def allocate(conn, server_id, protocol, runner):

@@ -9,7 +9,7 @@ const SETUP_KEYS: Record<Protocol, 'simple' | 'medium' | 'advanced'> = {
   xray: 'advanced',
   tor: 'advanced',
   hysteria2: 'simple',
-  tuic: 'simple',
+  shadowquic: 'simple',
 }
 
 export function useProtocolMeta(protocol: Protocol) {

@@ -152,6 +152,8 @@ def _ensure_compose_images(runner: RemoteRunner, compose: str) -> None:
         ensure_awg_image(runner)
     if "hoplyra-hysteria2:1" in compose:
         ensure_image(runner, "hoplyra-hysteria2:1", "hysteria2")
+    if "hoplyra-shadowquic:1" in compose:
+        ensure_image(runner, "hoplyra-shadowquic:1", "shadowquic")
     if "hoplyra-wg:2" in compose:
         ensure_wg_image(runner)
     if "hoplyra-xray:1" in compose:
@@ -1002,6 +1004,13 @@ Log err file /dev/null
             for name, content, mode in hy_files:
                 runner.upload_text(f"{path}/{name}", content, mode)
             services.extend(hy_services)
+        elif entry.protocol == "shadowquic":
+            client_conf, sq_services, sq_files, bypass_meta = self._shadowquic_entry_bundle(
+                runner, path, config_id, entry, downstream, local_tor
+            )
+            for name, content, mode in sq_files:
+                runner.upload_text(f"{path}/{name}", content, mode)
+            services.extend(sq_services)
         elif entry.protocol == "xray":
             client_conf, xray_svc, xray_files, hop_bypass_meta = self._xray_entry_bundle(
                 path,
@@ -1457,6 +1466,13 @@ Log err file /dev/null
             for name, content, mode in hy_files:
                 runner.upload_text(f"{path}/{name}", content, mode)
             services.extend(hy_services)
+        elif entry.protocol == "shadowquic":
+            client_conf, sq_services, sq_files, bypass_meta = self._shadowquic_entry_bundle(
+                runner, path, config_id, entry, downstream, local_tor
+            )
+            for name, content, mode in sq_files:
+                runner.upload_text(f"{path}/{name}", content, mode)
+            services.extend(sq_services)
         elif entry.protocol == "xray":
             client_conf, xray_svc, xray_files, hop_bypass_meta = self._xray_entry_bundle(
                 path, config_id, plan.entry, downstream, local_tor
@@ -1857,6 +1873,38 @@ PersistentKeepalive = 15
             services.append(compose_xray_service(
                 f"cv-hy2-bridge-{self._resource_tag(config_id)}", path,
                 service_name="hy2-bridge", config_file="hy2-bridge.json",
+                net_admin=bool(downstream.link_client_conf),
+            ))
+        if local_tor:
+            tor_service, tor_files = self._tor_sidecar_bundle(path, config_id)
+            services.append(tor_service)
+            files.extend(tor_files)
+        return client, services, files, meta
+
+    def _shadowquic_entry_bundle(
+        self, runner: RemoteRunner, path: str, config_id: str, hop: HopSpec,
+        downstream: ExitEndpoint | None, local_tor: bool,
+    ) -> tuple[str, list[str], list[tuple[str, str, int]], dict[str, Any]]:
+        from hoplyra.protocols import shadowquic_bundle, find_shadowquic_port
+
+        port = find_shadowquic_port(runner, 443)
+        bridge_port = self._listener_port(XRAY_ENTRY_PORT)
+        config, service, client, meta = shadowquic_bundle(
+            path, f"cv-sq-entry-{self._resource_tag(config_id)}", hop.server_host, port,
+            host_network=True, socks_port=bridge_port if downstream else None,
+        )
+        services = [service]
+        files = [("config.yaml", config, 0o600)]
+        if downstream:
+            via_tor = bool(local_tor or downstream.direct)
+            bridge = self._xray_chain_config(downstream, via_tor=via_tor, entry_redirect=False)
+            bridge["inbounds"] = [{"tag": "sq-in", "listen": "127.0.0.1", "port": bridge_port,
+                                   "protocol": "socks", "settings": {"auth": "noauth", "udp": True}}]
+            self._finalize_entry_chain_routing(bridge, downstream, inbound_tag="sq-in", via_tor=via_tor)
+            files.append(("sq-bridge.json", json.dumps(bridge, indent=2), 0o600))
+            services.append(compose_xray_service(
+                f"cv-sq-bridge-{self._resource_tag(config_id)}", path,
+                service_name="sq-bridge", config_file="sq-bridge.json",
                 net_admin=bool(downstream.link_client_conf),
             ))
         if local_tor:

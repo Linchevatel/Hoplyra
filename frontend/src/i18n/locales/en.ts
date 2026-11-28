@@ -326,10 +326,10 @@ export const en: TranslationTree = {
       bestFor: 'Max speed, 4G/5G, bad links',
       traits: ['QUIC (UDP)', 'Loss resistant', 'Port Hopping'],
     },
-    tuic: {
-      description: 'Low-latency QUIC protocol with BBR multiplexing',
-      bestFor: 'Fast response, web browsing, 0-RTT',
-      traits: ['QUIC (UDP)', 'Zero-RTT', 'BBR multiplexing'],
+    shadowquic: {
+      description: '0-RTT QUIC proxy with JLS TLS SNI camouflage and zero cert overhead',
+      bestFor: 'Active DPI evasion, fast UDP/QUIC links, 0-RTT',
+      traits: ['QUIC (UDP)', 'JLS SNI camouflage', 'Zero-RTT'],
     },
   },
   scenario: {

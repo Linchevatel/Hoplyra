@@ -47,6 +47,8 @@ def validate_chain(hops: list[dict[str, Any]]) -> None:
         raise ValueError("Tor не может быть первым звеном")
     if any(h["protocol"] == "hysteria2" for h in hops[1:]):
         raise ValueError("Hysteria 2 поддерживается только как входное звено")
+    if any(h["protocol"] == "shadowquic" for h in hops[1:]):
+        raise ValueError("ShadowQUIC поддерживается только как входное звено")
     for i in range(len(hops) - 1):
         a, b = hops[i], hops[i + 1]
         if a["serverId"] == b["serverId"]:

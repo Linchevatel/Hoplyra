@@ -8,7 +8,7 @@ export interface ClientConfigBundle {
   /** Что кодировать в QR — ссылка импорта или файл */
   qrPayload: string
   shareLink?: {
-    scheme: 'vpn' | 'vless' | 'hysteria2' | 'tuic'
+    scheme: 'vpn' | 'vless' | 'hysteria2' | 'shadowquic'
     uri: string
   }
   isChainEntry: boolean
@@ -23,7 +23,13 @@ function mockUuidFromId(id: string): string {
 /** Keys/certs come from the backend — never synthesize client material for these. */
 export function configRequiresServerSecrets(config: VpnConfig): boolean {
   if (config.protocol === 'xray' && config.xrayBypass) return true
-  return config.protocol === 'hysteria2' || config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'openvpn'
+  return (
+    config.protocol === 'hysteria2' ||
+    config.protocol === 'shadowquic' ||
+    config.protocol === 'awg' ||
+    config.protocol === 'wg' ||
+    config.protocol === 'openvpn'
+  )
 }
 
 export function extractVlessUri(clientConfig?: string): string | undefined {
@@ -192,10 +198,18 @@ export function buildClientConfigBundle(
     }
   }
 
-  if (config.protocol === 'hysteria2' || config.protocol === 'tuic') {
-    const uri = fileConfig.match(/(?:hysteria2|tuic):\/\/[^\s]+/)?.[0]
+  if (config.protocol === 'hysteria2') {
+    const uri = fileConfig.match(/hysteria2:\/\/[^\s]+/)?.[0]
     if (uri) {
-      bundle.shareLink = { scheme: config.protocol, uri }
+      bundle.shareLink = { scheme: 'hysteria2', uri }
+      bundle.qrPayload = uri
+    }
+  }
+
+  if (config.protocol === 'shadowquic') {
+    const uri = fileConfig.match(/(?:sq|shadowquic):\/\/[^\s]+/)?.[0]
+    if (uri) {
+      bundle.shareLink = { scheme: 'shadowquic', uri }
       bundle.qrPayload = uri
     }
   }
@@ -210,7 +224,7 @@ export function supportsQr(protocol: Protocol): boolean {
     protocol === 'openvpn' ||
     protocol === 'xray' ||
     protocol === 'hysteria2' ||
-    protocol === 'tuic'
+    protocol === 'shadowquic'
   )
 }
 
@@ -225,7 +239,14 @@ export function canShowClientConfig(config: VpnConfig): boolean {
 export function configFilename(protocol: Protocol, serverName: string, isChain?: boolean): string {
   const safe = serverName.replace(/\s+/g, '-').toLowerCase()
   const prefix = isChain ? 'chain-entry-' : ''
-  const ext = protocol === 'hysteria2' ? 'yaml' : protocol === 'xray' ? 'json' : protocol === 'openvpn' ? 'ovpn' : 'conf'
+  const ext =
+    protocol === 'hysteria2' || protocol === 'shadowquic'
+      ? 'yaml'
+      : protocol === 'xray'
+        ? 'json'
+        : protocol === 'openvpn'
+          ? 'ovpn'
+          : 'conf'
   const proto = protocol === 'openvpn' ? 'openvpn' : protocol
   return `hoplyra-${proto}-${prefix}${safe}.${ext}`
 }

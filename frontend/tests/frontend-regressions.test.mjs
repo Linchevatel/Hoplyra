@@ -163,7 +163,7 @@ test('browser lifecycle regressions (local mocks only)', {
         root.render(R.createElement('div', { id: 'icon-fixture' },
           ...['activity', 'latency', 'bandwidth', 'security', 'add-server', 'deploy', 'global', 'socks', 'multihop'].map((name) =>
             R.createElement(AppIcon, { key: name, name, size: name === 'multihop' ? 64 : 24 })),
-          ...['hysteria2', 'tuic'].map((protocol) => R.createElement(ProtocolIcon, { key: protocol, protocol }))))
+          ...['hysteria2', 'shadowquic'].map((protocol) => R.createElement(ProtocolIcon, { key: protocol, protocol }))))
       })
       await page.locator('#icon-fixture img').first().waitFor({ state: 'attached' })
       await page.waitForFunction(() => [...document.querySelectorAll('#icon-fixture img')].every((img) => img.complete && img.naturalWidth > 0))

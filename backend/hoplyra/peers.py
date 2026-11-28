@@ -328,6 +328,151 @@ def _remove_hysteria2_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_id: s
     _update_hysteria2_auth(cfg, runner, peer_id, password, remove=True)
 
 
+def _shadowquic_client(base: str, username: str, password: str, name: str) -> str:
+    """Replace only client credentials and the URI fragment, preserving JLS settings."""
+    match = re.search(r"(?:sq|shadowquic)://[^\s]+", base)
+    if not match:
+        raise ValueError("ShadowQUIC client URI missing")
+    uri = urlsplit(match.group())
+    endpoint = uri.netloc.rsplit("@", 1)[-1]
+    userinfo = f"{quote(username, safe='')}:{quote(password, safe='')}"
+    new_uri = urlunsplit((uri.scheme, f"{userinfo}@{endpoint}", uri.path, uri.query, quote(name, safe="")))
+    client = base.replace(match.group(), new_uri)
+    client = re.sub(r"^(\s*username:\s*).*$", lambda m: f"{m.group(1)}{json.dumps(username)}", client, flags=re.MULTILINE)
+    return re.sub(r"^(\s*password:\s*).*$", lambda m: f"{m.group(1)}{json.dumps(password)}", client, flags=re.MULTILINE)
+
+
+def _update_shadowquic_users(cfg: dict[str, Any], runner: RemoteRunner, username: str,
+                             password: str, *, remove: bool = False) -> None:
+    path = cfg.get("instance_path") or f"/opt/hoplyra/instances/{cfg['id']}"
+    container = cfg.get("container_name") or f"cv-sq-{cfg['id'][:8]}"
+    meta = {}
+    if "meta_json" in cfg and cfg["meta_json"]:
+        meta = json.loads(cfg["meta_json"]) if isinstance(cfg["meta_json"], str) else cfg["meta_json"]
+    elif "meta" in cfg and isinstance(cfg["meta"], dict):
+        meta = cfg["meta"]
+    runtime = meta.get("runtime") or cfg.get("runtime")
+    port = meta.get("listenPort") or cfg.get("listen_port") or 443
+    runtime_bin = "docker" if (runtime and "docker" in runtime) else ("podman" if (runtime and "podman" in runtime) else "")
+    script = rf"""
+import fcntl, json, os, re, subprocess, time
+p = {path + '/config.yaml'!r}
+container = {container!r}
+port = {port!r}
+runtime_bin = {runtime_bin!r}
+
+with open(p + '.lock', 'w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    original = open(p).read()
+    match = re.search(r'^(\s*users:\s*)(\[.*?\])\s*$', original, re.M)
+    if not match:
+        raise RuntimeError('users block missing')
+    users = json.loads(match.group(2))
+    username, password = {username!r}, {password!r}
+    if {remove!r}:
+        idx = next((i for i, u in enumerate(users) if u.get('username') == username), None)
+        if idx is None or users[idx].get('password') != password:
+            raise RuntimeError('peer credentials do not match')
+        users.pop(idx)
+    else:
+        if any(u.get('username') == username for u in users):
+            raise RuntimeError('peer already exists')
+        users.append({{'username': username, 'password': password}})
+    updated = original[:match.start()] + match.group(1) + json.dumps(users) + original[match.end():]
+    def write(content):
+        with open(p + '.new', 'w') as out:
+            os.chmod(p + '.new', 0o600)
+            out.write(content)
+        os.replace(p + '.new', p)
+    write(updated)
+    def _get_bin():
+        if runtime_bin:
+            return runtime_bin
+        for b in ('podman', 'docker'):
+            try:
+                res = subprocess.run([b, 'version'], capture_output=True)
+                if res.returncode == 0:
+                    return b
+            except FileNotFoundError:
+                pass
+        return 'podman'
+    bin_name = _get_bin()
+    def _restart():
+        try:
+            res = subprocess.run([bin_name, 'restart', container], capture_output=True)
+            return res.returncode
+        except Exception:
+            return 1
+    def _check_ready(timeout=10.0):
+        deadline = time.time() + timeout
+        while time.time() <= deadline:
+            insp = subprocess.run([bin_name, 'inspect', '-f', '{{{{.State.Status}}}} {{{{.State.Pid}}}}', container], capture_output=True, text=True)
+            parts = str(getattr(insp, 'stdout', '') or '').strip().split()
+            status = parts[0].lower() if parts else ''
+            pid = parts[1] if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) > 0 else None
+            if status in ('exited', 'dead'):
+                return False
+            if status == 'running' and pid:
+                ss = subprocess.run(['nsenter', '-t', pid, '-n', 'ss', '-H', '-lun', f'sport = :{{int(port)}}'], capture_output=True, text=True)
+                ss_out = str(getattr(ss, 'stdout', '') or '')
+                has_port = ss.returncode == 0 and any(
+                    len(cols := line.split()) >= 5
+                    and (cols[3] if cols[0] in ('UNCONN', 'ESTAB') else (cols[4] if cols[0] == 'udp' else '')).rsplit(':', 1)[-1] == str(port)
+                    for line in ss_out.splitlines()
+                )
+                if has_port:
+                    return True
+            time.sleep(0.1)
+        return False
+
+    restart_code = _restart()
+    ready = False
+    check_err = None
+    if restart_code == 0:
+        try:
+            ready = _check_ready()
+        except Exception as exc:
+            check_err = exc
+    if not ready:
+        write(original)
+        rb_restart = _restart()
+        if rb_restart != 0:
+            raise RuntimeError('container restart failed: rollback restart also failed')
+        rb_ready = False
+        rb_err = None
+        try:
+            rb_ready = _check_ready()
+        except Exception as exc:
+            rb_err = exc
+        if not rb_ready:
+            detail = rb_err or check_err or 'service did not become ready'
+            prefix = 'container restart failed: ' if restart_code != 0 else ''
+            raise RuntimeError(
+                prefix + 'ShadowQUIC config rolled back and restarted, but previous service readiness could not be verified (' + str(detail) + ')'
+            )
+        if check_err is not None:
+            raise RuntimeError('ShadowQUIC readiness check failed (' + str(check_err) + '); rolled back')
+        raise RuntimeError('ShadowQUIC rejected updated config; rolled back')
+"""
+    code, out, err = runner.run(f"python3 -c {shlex.quote(script)}", timeout=60)
+    if code != 0:
+        cleaned_err = re.sub(r'password.*', '[REDACTED]', err or out, flags=re.I)
+        cleaned_err = cleaned_err.replace(password, '[REDACTED]')
+        raise RuntimeError(f"Не удалось обновить ShadowQUIC-клиента: {cleaned_err}")
+
+
+def _create_shadowquic_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_name: str) -> tuple[str, str]:
+    username = f"peer_{uuid.uuid4().hex}"
+    password = secrets.token_urlsafe(24)
+    client = _shadowquic_client(cfg.get("client_config") or "", username, password, peer_name)
+    _update_shadowquic_users(cfg, runner, username, password)
+    return username, client
+
+
+def _remove_shadowquic_peer(cfg: dict[str, Any], runner: RemoteRunner, peer_id: str, password: str) -> None:
+    _update_shadowquic_users(cfg, runner, peer_id, password, remove=True)
+
+
 def _create_openvpn_peer(cfg: dict[str, Any], runner: RemoteRunner, cn: str) -> tuple[str, str]:
     quote = shlex.quote
     container = cfg.get("container_name") or f"cv-openvpn-{cfg['id'][:8]}"
@@ -397,7 +542,7 @@ def get_peer_stats(cfg: dict[str, Any], runner: RemoteRunner) -> dict[str, dict[
     }
     """
     protocol = cfg["protocol"]
-    if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2"):
+    if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2", "shadowquic"):
         return {}
 
     stats: dict[str, dict[str, Any]] = {}
@@ -528,7 +673,7 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
         if cfg["status"] != "active":
             raise RuntimeError("Конфигурация не активна")
         protocol = cfg["protocol"]
-        if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2"):
+        if protocol not in ("awg", "wg", "xray", "openvpn", "hysteria2", "shadowquic"):
             raise ValueError("Multi-peer не поддерживается для этого протокола")
         used = {
             r["client_ip"]
@@ -570,6 +715,15 @@ def create_peer(config_id: str, name: str, runner: RemoteRunner) -> dict[str, An
                 conn.execute("UPDATE configs SET client_config = ?, meta_json = ? WHERE id = ?",
                              (cfg["client_config"], json.dumps(meta), config_id))
                 conn.commit()
+    elif protocol == "shadowquic":
+        if not meta.get("password"):
+            raise ValueError("ShadowQUIC primary password missing")
+        pub_key, client_conf = _create_shadowquic_peer(cfg, runner, name.strip())
+        pw_match = re.search(r"^\s*password:\s*(.+)$", client_conf, re.MULTILINE)
+        if not pw_match:
+            raise ValueError("Failed to parse password from ShadowQUIC client config")
+        psk = json.loads(pw_match.group(1))
+        client_ip = pub_key
     else:
         pub_key, client_conf = _create_openvpn_peer(cfg, runner, f"peer_{peer_id[:8]}")
         psk = ""
@@ -617,6 +771,8 @@ def revoke_peer(config_id: str, peer_id: str, runner: RemoteRunner) -> None:
         _remove_openvpn_peer(cfg, runner, peer_row["public_key"])
     elif protocol == "hysteria2":
         _remove_hysteria2_peer(cfg, runner, peer_row["public_key"], peer_row["preshared_key"])
+    elif protocol == "shadowquic":
+        _remove_shadowquic_peer(cfg, runner, peer_row["public_key"], peer_row["preshared_key"])
     with connect() as conn:
         conn.execute(
             "UPDATE config_peers SET revoked_at = ? WHERE id = ?",

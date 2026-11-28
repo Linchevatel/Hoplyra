@@ -13,6 +13,7 @@ hoplyra.db
 backend/tests/*
 !backend/tests/test_deploy_log.py
 !backend/tests/test_hysteria2.py
+!backend/tests/test_shadowquic.py
 !backend/tests/test_chain_exit_link.py
 !backend/tests/test_chain_combinations.py
 !backend/tests/test_chain_failure_recovery.py

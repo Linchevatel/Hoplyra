@@ -1,5 +1,5 @@
 import type { AwgParams } from './awg'
-export type Protocol = 'awg' | 'wg' | 'openvpn' | 'xray' | 'tor' | 'hysteria2' | 'tuic'
+export type Protocol = 'awg' | 'wg' | 'openvpn' | 'xray' | 'tor' | 'hysteria2' | 'shadowquic'
 
 export type OpenVpnTransport = 'udp' | 'tcp'
 

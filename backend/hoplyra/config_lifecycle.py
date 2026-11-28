@@ -137,7 +137,10 @@ def stop_remote_config(
         # Legacy awg0 has no ownership marker; preserve it on shared hosts.
         awg_quick_down(runner, f"{instance_path}/awg_{config_id[:8]}.conf")
     else:
-        deployer.stop(runner, config_id, instance_path)
+        if meta.get("runtime"):
+            deployer.stop(runner, config_id, instance_path, runtime=meta["runtime"])
+        else:
+            deployer.stop(runner, config_id, instance_path)
     if purge:
         purge_host_artifacts(runner, config_id, chain=False)
         container = cfg.get("container_name") or f"cv-{cfg['protocol']}-{config_id[:8]}"
@@ -176,11 +179,21 @@ def restart_remote_config(cfg: dict[str, Any], *, get_server_row, server_target)
     runner = RemoteRunner(server_target(row))
     project = f"cv-{cfg['protocol']}-{config_id[:8]}"
     path_q = shlex.quote(cfg["instance_path"])
+    runtime = meta.get("runtime")
+    if runtime == "docker compose":
+        up_cmd = f"docker compose -p {project} up -d --force-recreate"
+    elif runtime == "podman-compose":
+        up_cmd = f"podman-compose -p {project} up -d"
+    elif runtime == "podman compose":
+        up_cmd = f"podman compose -p {project} up -d --force-recreate"
+    else:
+        up_cmd = (
+            f"(podman compose -p {project} up -d --force-recreate || "
+            f"podman-compose -p {project} up -d || "
+            f"docker compose -p {project} up -d --force-recreate)"
+        )
     code, out, err = runner.run(
-        f"cd {path_q} && "
-        f"(podman compose -p {project} up -d --force-recreate || "
-        f"podman-compose -p {project} up -d || "
-        f"docker compose -p {project} up -d --force-recreate)",
+        f"cd {path_q} && {up_cmd}",
         timeout=300,
     )
     if code != 0:

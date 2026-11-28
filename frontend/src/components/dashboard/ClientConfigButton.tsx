@@ -17,7 +17,7 @@ export function ClientConfigButton({
 
   if (!canShowClientConfig(config)) return null
 
-  const isMultiPeer = (config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'xray' || config.protocol === 'openvpn' || config.protocol === 'hysteria2') && !config.hops?.length
+  const isMultiPeer = (config.protocol === 'awg' || config.protocol === 'wg' || config.protocol === 'xray' || config.protocol === 'openvpn' || config.protocol === 'hysteria2' || config.protocol === 'shadowquic') && !config.hops?.length
 
   return (
     <Button variant={compact ? 'ghost' : 'secondary'} size="sm" onClick={onClick}>

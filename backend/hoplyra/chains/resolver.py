@@ -5,8 +5,8 @@ from typing import Iterable
 
 from hoplyra.chains.planner import ChainPlan, HopSpec, validate_chain
 
-PROTOCOLS = ("awg", "wg", "openvpn", "xray", "tor", "hysteria2")
-ENTRY_PROTOCOLS = ("awg", "wg", "openvpn", "xray", "hysteria2")
+PROTOCOLS = ("awg", "wg", "openvpn", "xray", "tor", "hysteria2", "shadowquic")
+ENTRY_PROTOCOLS = ("awg", "wg", "openvpn", "xray", "hysteria2", "shadowquic")
 EXIT_PROTOCOLS = ("awg", "wg", "openvpn", "xray", "tor")
 TRANSPORT_PROTOCOLS = ("tor",)
 RELAY_PROTOCOLS = ("tor", "xray")
@@ -30,7 +30,7 @@ def is_same_server_pair_allowed(a_protocol: str, b_protocol: str, same_server: b
 def is_valid_hop_sequence(protocols: tuple[str, ...]) -> bool:
     if not (2 <= len(protocols) <= MAX_HOPS):
         return False
-    if protocols[0] == "tor" or "hysteria2" in protocols[1:]:
+    if protocols[0] == "tor" or "hysteria2" in protocols[1:] or "shadowquic" in protocols[1:]:
         return False
     for i in range(len(protocols) - 1):
         if not is_same_server_pair_allowed(protocols[i], protocols[i + 1], False):
@@ -42,7 +42,7 @@ def enumerate_protocol_sequences(length: int) -> Iterable[tuple[str, ...]]:
     if length < 2 or length > MAX_HOPS:
         return
     for seq in product(PROTOCOLS, repeat=length):
-        if seq[0] == "tor" or "hysteria2" in seq[1:]:
+        if seq[0] == "tor" or "hysteria2" in seq[1:] or "shadowquic" in seq[1:]:
             continue
         yield seq
 
@@ -128,7 +128,7 @@ def needs_wg_link(plan: ChainPlan) -> bool:
 
 def entry_needs_gateway(plan: ChainPlan, downstream: bool, local_tor: bool) -> bool:
     entry = plan.entry.protocol
-    if entry in ("xray", "hysteria2"):
+    if entry in ("xray", "hysteria2", "shadowquic"):
         return False
     if local_tor:
         return True

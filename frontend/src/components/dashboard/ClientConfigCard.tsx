@@ -106,7 +106,8 @@ export function ClientConfigCard({
       config.protocol === 'wg' ||
       config.protocol === 'xray' ||
       config.protocol === 'openvpn' ||
-      config.protocol === 'hysteria2')
+      config.protocol === 'hysteria2' ||
+      config.protocol === 'shadowquic')
 
   const [peers, setPeers] = useState<api.ConfigPeer[]>([])
   const [loadingPeers, setLoadingPeers] = useState(false)

@@ -45,7 +45,7 @@ function ClientConfigModalContent({
   const [routingMode, setRoutingMode] = useState<'all' | 'bypass-ru'>('all')
   const [qrPeerId, setQrPeerId] = useState<string | null>(null)
   const supportsPeers =
-    (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn' || liveConfig.protocol === 'hysteria2') &&
+    (liveConfig.protocol === 'awg' || liveConfig.protocol === 'wg' || liveConfig.protocol === 'xray' || liveConfig.protocol === 'openvpn' || liveConfig.protocol === 'hysteria2' || liveConfig.protocol === 'shadowquic') &&
     !liveConfig.hops?.length &&
     liveConfig.status === 'active' &&
     !liveConfig.id.startsWith('demo-')

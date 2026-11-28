@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 const names = [
   'dashboard', 'servers', 'add', 'settings2', 'activity2', 'latency2',
   'bandwidth2', 'security2', 'deploy2', 'global2', 'link2',
-  'wireguard', 'amneziawg', 'openvpn', 'tor', 'xray', 'vless', 'socks', 'multihop',
+  'wireguard', 'amneziawg', 'openvpn', 'tor', 'xray', 'vless', 'socks', 'multihop', 'hysteria2', 'shadowquic',
   'xray2', 'socks2', 'chain', 'global', 'add-server', 'deploy', 'link', 'settings',
   'activity', 'latency', 'bandwidth', 'security', 'server', 'lock',
 ]

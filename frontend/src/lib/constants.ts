@@ -75,14 +75,14 @@ const _PROTOCOLS_RAW: Record<
     traits: ['QUIC (UDP)', 'Loss resistant', 'Port Hopping'],
     qrConfig: true,
   },
-  tuic: {
-    label: 'TUIC v5',
-    shortLabel: 'TUIC',
-    description: 'Low-latency QUIC protocol with BBR multiplexing',
+  shadowquic: {
+    label: 'ShadowQUIC',
+    shortLabel: 'SQ',
+    description: '0-RTT QUIC proxy with JLS TLS SNI camouflage and zero cert overhead',
     color: 'from-accent-cyan to-accent-violet',
-    bestFor: 'Fast response, web browsing, 0-RTT',
+    bestFor: 'Active DPI evasion, fast UDP/QUIC links, 0-RTT',
     setup: 'simple',
-    traits: ['QUIC (UDP)', 'Zero-RTT', 'BBR multiplexing'],
+    traits: ['QUIC (UDP)', 'JLS SNI camouflage', 'Zero-RTT'],
     qrConfig: true,
   },
 }
@@ -107,10 +107,10 @@ export const PROTOCOLS = new Proxy(_PROTOCOLS_RAW, {
   }
 }) as typeof _PROTOCOLS_RAW
 
-export const FREE_PROTOCOLS: Protocol[] = ['awg', 'wg', 'openvpn', 'xray', 'tor', 'hysteria2', 'tuic']
+export const FREE_PROTOCOLS: Protocol[] = ['awg', 'wg', 'openvpn', 'xray', 'tor', 'hysteria2', 'shadowquic']
 
 /** Протоколы для одиночного VPN (без Tor) */
-export const VPN_PROTOCOLS: Protocol[] = ['awg', 'wg', 'openvpn', 'xray', 'hysteria2', 'tuic']
+export const VPN_PROTOCOLS: Protocol[] = ['awg', 'wg', 'openvpn', 'xray', 'hysteria2', 'shadowquic']
 
 /** Tor нельзя ставить первым звеном цепи */
 export const CHAIN_ENTRY_BLOCKED_PROTOCOLS: Protocol[] = ['tor']
@@ -127,7 +127,7 @@ export interface ChainTemplate {
 export const CHAIN_TEMPLATES: ChainTemplate[] = [
   { name: 'Xray → OpenVPN', hops: ['xray', 'openvpn'], serverIndices: [1, 3] },
   { name: 'Hysteria 2 → Tor', hops: ['hysteria2', 'tor'], serverIndices: [0, 7] },
-  { name: 'TUIC → Tor', hops: ['tuic', 'tor'], serverIndices: [1, 7] },
+  { name: 'ShadowQUIC → Tor', hops: ['shadowquic', 'tor'], serverIndices: [1, 7] },
   { name: 'AWG → Tor', hops: ['awg', 'tor'], serverIndices: [0, 7] },
   { name: 'Xray → Tor', hops: ['xray', 'tor'], serverIndices: [1, 7] },
   { name: 'WG → Tor', hops: ['wg', 'tor'], serverIndices: [2, 7] },

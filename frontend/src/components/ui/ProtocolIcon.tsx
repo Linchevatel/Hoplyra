@@ -11,7 +11,7 @@ import vless from '@/assets/icons/vless.png'
 import socks from '@/assets/icons/socks.png'
 import chain from '@/assets/icons/chain.png'
 import hysteria2 from '@/assets/icons/hysteria2.png'
-import tuic from '@/assets/icons/tuic.png'
+import shadowquic from '@/assets/icons/shadowquic.png'
 
 type IconProtocol = Protocol | 'vless' | 'socks' | 'chain'
 
@@ -27,7 +27,7 @@ const PROTOCOL_ICON_PATH: Record<IconProtocol, string> = {
   socks,
   chain,
   hysteria2,
-  tuic,
+  shadowquic,
 }
 
 const SIZE = {
