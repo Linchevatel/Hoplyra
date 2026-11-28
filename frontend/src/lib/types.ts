@@ -270,5 +270,6 @@ export interface CreateStandaloneProxyPayload {
   secret?: string
   sni?: string
   cipher?: string
+  asyncDeploy?: boolean
 }
 

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from hoplyra import db
 from hoplyra.db import connect, init_db
 from hoplyra.standalone_proxies import (
     SUPPORTED_PROXY_TYPES,
@@ -20,16 +21,16 @@ from hoplyra.standalone_proxies import (
     list_standalone_proxies,
     start_standalone_proxy,
     stop_standalone_proxy,
+    wait_for_proxy_deploy_jobs,
 )
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "hoplyra.db")
     init_db()
     with connect() as conn:
-        conn.execute("DELETE FROM standalone_proxies")
-        conn.execute("DELETE FROM realms_brokers")
-        conn.execute("DELETE FROM servers WHERE id IN ('srv-100', 'srv-200')")
         conn.execute(
             "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             ("srv-100", "Test VPS 1", "192.0.2.55", 22, "root", "password", "pass", "2026-01-01T00:00:00Z"),
@@ -39,6 +40,8 @@ def setup_db():
             ("srv-200", "Test VPS 2", "198.51.100.10", 22, "root", "password", "pass", "2026-01-01T00:00:00Z"),
         )
         conn.commit()
+    yield
+    wait_for_proxy_deploy_jobs(timeout=5)
 
 
 def fake_server(server_id: str = "srv-100", host: str = "192.0.2.55"):
@@ -768,3 +771,713 @@ def test_find_free_proxy_port_scopes_by_server_and_fails_on_ss_or_exhaustion():
     runner.run.return_value = (0, "LISTEN 0 128 0.0.0.0:65534 0.0.0.0:*\nLISTEN 0 128 0.0.0.0:65535 0.0.0.0:*\n", "")
     with pytest.raises(StandaloneProxyError, match="No free port available"):
         _find_free_proxy_port(runner, "srv-200", 65534, "socks5")
+
+
+def test_api_standalone_proxies_lifecycle_and_404():
+    from fastapi.testclient import TestClient
+    from hoplyra.main import app
+
+    with connect() as conn:
+        conn.execute("DELETE FROM servers WHERE id = 'srv-api'")
+        conn.execute(
+            "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("srv-api", "API VPS", "192.0.2.88", 22, "root", "agent", None, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    client = TestClient(app)
+    runner = fake_runner("192.0.2.88")
+
+    def _side_effect_run(cmd, timeout=30):
+        if "docker ps -a" in cmd or "podman ps -a" in cmd:
+            return (0, "", "")
+        if "docker inspect" in cmd or "podman inspect" in cmd:
+            return (1, "", "no such container")
+        return (0, "", "")
+
+    runner.run.side_effect = _side_effect_run
+
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.podman_compose_down"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        # Missing server should cleanly return 404 (not NameError / 500)
+        missing_srv = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "no-such-server", "proxyType": "socks5"},
+        )
+        assert missing_srv.status_code == 404
+
+        created = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-api", "proxyType": "socks5", "name": "API Proxy"},
+        )
+        assert created.status_code == 200, created.text
+        proxy_id = created.json()["id"]
+
+        stopped = client.post(f"/api/standalone-proxies/{proxy_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        assert stopped.json()["status"] == "inactive"
+
+        started = client.post(f"/api/standalone-proxies/{proxy_id}/start")
+        assert started.status_code == 200, started.text
+        assert started.json()["status"] == "active"
+
+        deleted = client.delete(f"/api/standalone-proxies/{proxy_id}")
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json() == {"status": "deleted"}
+
+        # Verify deleted proxy returns 404
+        assert client.get(f"/api/standalone-proxies/{proxy_id}").status_code == 404
+        assert client.post(f"/api/standalone-proxies/{proxy_id}/stop").status_code == 404
+        assert client.delete(f"/api/standalone-proxies/{proxy_id}").status_code == 404
+
+        # Verify StandaloneProxyError on stop/start/delete maps to 400 (not 500)
+        with patch("hoplyra.standalone_proxies.stop_standalone_proxy", side_effect=StandaloneProxyError("runtime busy")):
+            assert client.post("/api/standalone-proxies/any/stop").status_code == 400
+
+
+def test_api_standalone_proxy_async_deploy_populates_deploy_log():
+    import threading
+    import time
+    from fastapi.testclient import TestClient
+    from hoplyra import deploy_log
+    from hoplyra.main import app
+
+    with connect() as conn:
+        conn.execute("DELETE FROM servers WHERE id = 'srv-async'")
+        conn.execute(
+            "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("srv-async", "Async VPS", "192.0.2.99", 22, "root", "agent", None, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    client = TestClient(app)
+    runner = fake_runner("192.0.2.99")
+    compose_gate = threading.Event()
+    compose_started = threading.Event()
+
+    def _gated_compose_up(*args, **kwargs):
+        compose_started.set()
+        assert compose_gate.wait(timeout=5)
+        return "podman-compose"
+
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", side_effect=_gated_compose_up),
+        patch("hoplyra.standalone_proxies.podman_compose_down"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        resp = client.post(
+            "/api/standalone-proxies",
+            json={
+                "serverId": "srv-async",
+                "proxyType": "socks5",
+                "name": "Async SOCKS",
+                "listenPort": 1088,
+                "asyncDeploy": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        created = resp.json()
+        proxy_id = created["id"]
+        assert created["status"] == "deploying"
+        assert created["listenPort"] == 1088
+
+        assert compose_started.wait(timeout=5)
+        mid_log = client.get(f"/api/configs/{proxy_id}/deploy-log")
+        assert mid_log.status_code == 200, mid_log.text
+        mid_stages = {e["stage"] for e in mid_log.json()["events"] if e.get("stage")}
+        assert "init" in mid_stages
+        assert "container" in mid_stages
+
+        compose_gate.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if deploy_log.status(proxy_id)["finished"]:
+                break
+            time.sleep(0.05)
+
+        assert deploy_log.status(proxy_id)["finished"] is True
+        assert deploy_log.status(proxy_id)["ok"] is True
+
+        final_proxy = client.get(f"/api/standalone-proxies/{proxy_id}")
+        assert final_proxy.status_code == 200
+        assert final_proxy.json()["status"] == "active"
+        assert final_proxy.json()["clientUri"].startswith("socks5://")
+
+        final_log = client.get(f"/api/configs/{proxy_id}/deploy-log")
+        assert final_log.status_code == 200
+        payload = final_log.json()
+        assert payload["status"]["finished"] is True
+        assert payload["status"]["ok"] is True
+        stages = {e["stage"] for e in payload["events"] if e.get("stage")}
+        assert {"init", "port", "config", "image", "container", "ready", "finish"}.issubset(stages)
+
+    # Error path in asyncDeploy writes error status and finishes deploy_log with ok=False
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", side_effect=RuntimeError("compose start boom")),
+        patch("hoplyra.standalone_proxies.podman_compose_down"),
+    ):
+        err_resp = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-async", "proxyType": "socks5", "listenPort": 1089, "asyncDeploy": True},
+        )
+        assert err_resp.status_code == 200
+        err_id = err_resp.json()["id"]
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if deploy_log.status(err_id)["finished"]:
+                break
+            time.sleep(0.05)
+
+        assert deploy_log.status(err_id)["finished"] is True
+        assert deploy_log.status(err_id)["ok"] is False
+        failed_row = client.get(f"/api/standalone-proxies/{err_id}").json()
+        assert failed_row["status"] == "error"
+        assert "compose start boom" in failed_row["meta"]["error"]
+
+
+def test_api_stop_start_delete_return_409_during_async_deploy_and_cannot_race():
+    import threading
+    import time
+    from fastapi.testclient import TestClient
+    from hoplyra import deploy_log
+    from hoplyra.main import app
+
+    with connect() as conn:
+        conn.execute("DELETE FROM servers WHERE id = 'srv-race'")
+        conn.execute(
+            "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("srv-race", "Race VPS", "192.0.2.101", 22, "root", "agent", None, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    client = TestClient(app)
+    runner = fake_runner("192.0.2.101")
+    runner.run.side_effect = lambda cmd, **kwargs: (0, "exited\n", "") if " inspect " in cmd else (0, "", "")
+
+    compose_entered = threading.Event()
+    compose_release = threading.Event()
+
+    def _paused_compose_up(*args, **kwargs):
+        compose_entered.set()
+        assert compose_release.wait(timeout=5)
+        return "podman-compose"
+
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", side_effect=_paused_compose_up),
+        patch("hoplyra.standalone_proxies.podman_compose_down") as mock_down,
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        resp = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-race", "proxyType": "socks5", "name": "Race SOCKS", "asyncDeploy": True},
+        )
+        assert resp.status_code == 200, resp.text
+        proxy_id = resp.json()["id"]
+
+        assert compose_entered.wait(timeout=5)
+
+        # While deploy worker is paused before compose up completes, stop/start/delete MUST return 409
+        stop_during = client.post(f"/api/standalone-proxies/{proxy_id}/stop")
+        start_during = client.post(f"/api/standalone-proxies/{proxy_id}/start")
+        del_during = client.delete(f"/api/standalone-proxies/{proxy_id}")
+
+        assert stop_during.status_code == 409, stop_during.text
+        assert start_during.status_code == 409, start_during.text
+        assert del_during.status_code == 409, del_during.text
+        mock_down.assert_not_called()
+        assert get_standalone_proxy_by_id(proxy_id)["status"] == "deploying"
+
+        # Let deploy finish cleanly
+        compose_release.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if deploy_log.status(proxy_id)["finished"]:
+                break
+            time.sleep(0.05)
+
+        assert get_standalone_proxy_by_id(proxy_id)["status"] == "active"
+
+        # Now stop succeeds and cannot be overwritten back to active
+        stop_after = client.post(f"/api/standalone-proxies/{proxy_id}/stop")
+        assert stop_after.status_code == 200, stop_after.text
+        assert stop_after.json() == {"status": "inactive"}
+        mock_down.assert_called_once()
+        assert get_standalone_proxy_by_id(proxy_id)["status"] == "inactive"
+
+
+def test_first_proxy_on_empty_vps_picks_default_port_and_rejects_duplicate_explicit_port():
+    import time
+    from fastapi.testclient import TestClient
+    from hoplyra import deploy_log
+    from hoplyra.main import app
+
+    with connect() as conn:
+        conn.execute("DELETE FROM servers WHERE id = 'srv-empty'")
+        conn.execute(
+            "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("srv-empty", "Empty VPS", "192.0.2.102", 22, "root", "agent", None, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    client = TestClient(app)
+    runner = fake_runner("192.0.2.102")
+    runner.run.return_value = (0, "", "")
+
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        resp = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-empty", "proxyType": "socks5", "asyncDeploy": True},
+        )
+        assert resp.status_code == 200, resp.text
+        proxy_id = resp.json()["id"]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if deploy_log.status(proxy_id)["finished"]:
+                break
+            time.sleep(0.05)
+
+        first = client.get(f"/api/standalone-proxies/{proxy_id}").json()
+        assert first["status"] == "active"
+        assert first["listenPort"] == 1080
+        assert ":1080" in first["clientUri"]
+
+        # Duplicate explicit port on same server must be rejected cleanly
+        dup = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-empty", "proxyType": "socks5", "listenPort": 1080},
+        )
+        assert dup.status_code == 400
+
+
+def test_concurrent_async_deploys_reserve_distinct_ports():
+    import threading
+    import time
+    from fastapi.testclient import TestClient
+    from hoplyra import deploy_log
+    from hoplyra.main import app
+
+    with connect() as conn:
+        conn.execute("DELETE FROM servers WHERE id = 'srv-par'")
+        conn.execute(
+            "INSERT INTO servers (id, name, host, port, username, auth_type, auth_secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("srv-par", "Parallel VPS", "192.0.2.103", 22, "root", "agent", None, "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    client = TestClient(app)
+    runner = fake_runner("192.0.2.103")
+    scan_barrier = threading.Barrier(2, timeout=5)
+
+    def _run_with_barrier(cmd, **kwargs):
+        if cmd.startswith("ss -H -lntu"):
+            scan_barrier.wait()
+            return (0, "", "")
+        return (0, "", "")
+
+    runner.run.side_effect = _run_with_barrier
+
+    with (
+        patch("hoplyra.auth.is_authenticated", return_value=True),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_podman"),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies._detect_compose_runtime", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.mkdir_remote"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        r1 = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-par", "proxyType": "socks5", "name": "Par 1", "asyncDeploy": True},
+        )
+        r2 = client.post(
+            "/api/standalone-proxies",
+            json={"serverId": "srv-par", "proxyType": "socks5", "name": "Par 2", "asyncDeploy": True},
+        )
+        assert r1.status_code == 200, r1.text
+        assert r2.status_code == 200, r2.text
+        id1, id2 = r1.json()["id"], r2.json()["id"]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if deploy_log.status(id1)["finished"] and deploy_log.status(id2)["finished"]:
+                break
+            time.sleep(0.05)
+
+        p1 = client.get(f"/api/standalone-proxies/{id1}").json()
+        p2 = client.get(f"/api/standalone-proxies/{id2}").json()
+        assert p1["status"] == "active"
+        assert p2["status"] == "active"
+        assert {p1["listenPort"], p2["listenPort"]} == {1080, 1081}
+
+
+def test_recover_stuck_standalone_proxies_restores_running_or_marks_error():
+    from hoplyra.standalone_proxies import (
+        _register_proxy_deploy,
+        _unregister_proxy_deploy,
+        recover_stuck_standalone_proxies,
+    )
+
+    with connect() as conn:
+        # 1) Stuck with runtime + running container -> should recover to active
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, ?, ?, ?, ?)""",
+            (
+                "prx-rec-run",
+                "srv-100",
+                "Recovered Running",
+                "socks5",
+                1080,
+                "cv-prx-recrun01",
+                "/opt/hoplyra/proxies/prx-rec-run",
+                "podman-compose",
+                "socks5://u:p@192.0.2.55:1080",
+                json.dumps({"serverHost": "192.0.2.55", "listenPort": 1080, "runtime": "podman-compose"}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        # 2) Stuck with runtime + exited container -> should become error (retryable via start)
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, ?, ?, ?, ?)""",
+            (
+                "prx-rec-down",
+                "srv-100",
+                "Recovered Exited",
+                "socks5",
+                1081,
+                "cv-prx-recdwn2",
+                "/opt/hoplyra/proxies/prx-rec-down",
+                "podman-compose",
+                "socks5://u:p@192.0.2.55:1081",
+                json.dumps({"serverHost": "192.0.2.55", "listenPort": 1081, "runtime": "podman-compose"}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        # 3) Stuck early before compose (runtime=NULL, listen_port=0, client_uri='') -> should become error (deletable)
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, NULL, '', ?, ?)""",
+            (
+                "prx-rec-early",
+                "srv-100",
+                "Recovered Early",
+                "socks5",
+                0,
+                "cv-prx-recearly",
+                "/opt/hoplyra/proxies/prx-rec-early",
+                json.dumps({"serverHost": "192.0.2.55", "listenPort": 0}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        # 4) Actively running in this process -> must be skipped by recovery
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, NULL, '', ?, ?)""",
+            (
+                "prx-rec-live",
+                "srv-100",
+                "Live Deploy",
+                "socks5",
+                0,
+                "cv-prx-reclive1",
+                "/opt/hoplyra/proxies/prx-rec-live",
+                "{}",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    runner = fake_runner()
+
+    def _probe_run(cmd, **kwargs):
+        if "inspect" in cmd and "cv-prx-recrun01" in cmd:
+            return (0, "running\n", "")
+        if "inspect" in cmd and "cv-prx-recdwn2" in cmd:
+            return (0, "exited\n", "")
+        if "inspect" in cmd and "cv-prx-recearly" in cmd:
+            return (1, "", "no such object")
+        return (0, "", "")
+
+    runner.run.side_effect = _probe_run
+
+    _register_proxy_deploy("prx-rec-live")
+    try:
+        with (
+            patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+            patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+        ):
+            outcomes = recover_stuck_standalone_proxies(
+                get_server_row=lambda sid: fake_server(sid),
+                server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+            )
+    finally:
+        _unregister_proxy_deploy("prx-rec-live")
+
+    assert outcomes == {
+        "prx-rec-run": "active",
+        "prx-rec-down": "error",
+        "prx-rec-early": "error",
+    }
+    assert get_standalone_proxy_by_id("prx-rec-run")["status"] == "active"
+    assert get_standalone_proxy_by_id("prx-rec-down")["status"] == "error"
+    assert "interrupted by service restart" in get_standalone_proxy_by_id("prx-rec-down")["meta"]["error"]
+    assert get_standalone_proxy_by_id("prx-rec-early")["status"] == "error"
+    assert get_standalone_proxy_by_id("prx-rec-live")["status"] == "deploying"
+
+    # Retry start on prx-rec-down works cleanly
+    with (
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.podman_compose_up", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        restarted = start_standalone_proxy(
+            "prx-rec-down",
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+    assert restarted == {"status": "active"}
+
+    # Early-interrupted record deletes cleanly without calling compose down
+    with (
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.podman_compose_down") as mock_down_early,
+    ):
+        deleted = delete_standalone_proxy(
+            "prx-rec-early",
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+    assert deleted == {"status": "deleted"}
+    mock_down_early.assert_not_called()
+
+
+def test_shutdown_waits_for_paused_proxy_recovery_before_finishing():
+    import threading
+    import time
+    from hoplyra import main
+    from hoplyra.standalone_proxies import schedule_recover_stuck_standalone_proxies
+
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, ?, ?, ?, ?)""",
+            (
+                "prx-shutdown-rec",
+                "srv-100",
+                "Shutdown Recovery",
+                "socks5",
+                1085,
+                "cv-prx-shutrec1",
+                "/opt/hoplyra/proxies/prx-shutdown-rec",
+                "podman-compose",
+                "socks5://u:p@192.0.2.55:1085",
+                json.dumps({"serverHost": "192.0.2.55", "listenPort": 1085, "runtime": "podman-compose"}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    probe_entered = threading.Event()
+    probe_release = threading.Event()
+    shutdown_done = threading.Event()
+    runner = fake_runner()
+
+    def _paused_probe(cmd, **kwargs):
+        if "inspect" in cmd and "cv-prx-shutrec1" in cmd:
+            probe_entered.set()
+            assert probe_release.wait(timeout=5)
+            return (0, "running\n", "")
+        return (0, "", "")
+
+    runner.run.side_effect = _paused_probe
+
+    with (
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+        patch.object(main, "wait_for_deploy_jobs"),
+        patch.object(main.metrics_cache, "stop"),
+    ):
+        rec_thread = schedule_recover_stuck_standalone_proxies(
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+        assert rec_thread is not None
+        assert probe_entered.wait(timeout=5)
+
+        def _run_shutdown() -> None:
+            main.shutdown()
+            shutdown_done.set()
+
+        shut_thread = threading.Thread(target=_run_shutdown)
+        shut_thread.start()
+        time.sleep(0.15)
+        assert not shutdown_done.is_set()
+        assert get_standalone_proxy_by_id("prx-shutdown-rec")["status"] == "deploying"
+
+        probe_release.set()
+        assert shutdown_done.wait(timeout=5)
+        shut_thread.join(timeout=5)
+
+    assert get_standalone_proxy_by_id("prx-shutdown-rec")["status"] == "active"
+
+
+def test_proxy_lock_registry_does_not_leak_for_unknown_or_completed_ids():
+    from fastapi.testclient import TestClient
+    from hoplyra.main import app
+    from hoplyra.standalone_proxies import _PROXY_LOCKS
+
+    assert len(_PROXY_LOCKS) == 0
+    client = TestClient(app)
+    runner = fake_runner()
+    runner.run.side_effect = lambda cmd, **kwargs: (0, "exited\n", "") if " inspect " in cmd else (0, "", "")
+
+    with patch("hoplyra.auth.is_authenticated", return_value=True):
+        for i in range(15):
+            assert client.post(f"/api/standalone-proxies/unknown-proxy-{i}/stop").status_code == 404
+            assert client.post(f"/api/standalone-proxies/unknown-proxy-{i}/start").status_code == 404
+            assert client.delete(f"/api/standalone-proxies/unknown-proxy-{i}").status_code == 404
+
+    assert len(_PROXY_LOCKS) == 0
+
+    with (
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies.ensure_image"),
+        patch("hoplyra.standalone_proxies.podman_compose_up", return_value="podman-compose"),
+        patch("hoplyra.standalone_proxies.podman_compose_down"),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+    ):
+        created = deploy_standalone_proxy(
+            server_id="srv-100",
+            proxy_type="socks5",
+            listen_port=1095,
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+        assert len(_PROXY_LOCKS) == 0
+        stop_standalone_proxy(
+            created["id"],
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+        assert len(_PROXY_LOCKS) == 0
+        delete_standalone_proxy(
+            created["id"],
+            get_server_row=lambda sid: fake_server(sid),
+            server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+        )
+        assert len(_PROXY_LOCKS) == 0
+
+
+def test_shutdown_waits_even_when_pausing_before_worker_thread_start():
+    import threading
+    import time
+    from hoplyra import main
+    from hoplyra.standalone_proxies import schedule_recover_stuck_standalone_proxies
+
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO standalone_proxies
+               (id, server_id, name, proxy_type, listen_port, status, container_name, instance_path, runtime, client_uri, meta_json, created_at)
+               VALUES (?, ?, ?, ?, ?, 'deploying', ?, ?, ?, ?, ?, ?)""",
+            (
+                "prx-start-race",
+                "srv-100",
+                "Pre-Start Race",
+                "socks5",
+                1086,
+                "cv-prx-startrac",
+                "/opt/hoplyra/proxies/prx-start-race",
+                "podman-compose",
+                "socks5://u:p@192.0.2.55:1086",
+                json.dumps({"serverHost": "192.0.2.55", "listenPort": 1086, "runtime": "podman-compose"}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    before_start = threading.Event()
+    allow_start = threading.Event()
+    shutdown_done = threading.Event()
+    runner = fake_runner()
+    runner.run.side_effect = lambda cmd, **kwargs: (0, "running\n", "") if "inspect" in cmd else (0, "", "")
+
+    orig_start = threading.Thread.start
+
+    def _paused_start(self: threading.Thread, *args, **kwargs):
+        if self.name == "hoplyra-proxy-recover":
+            before_start.set()
+            assert allow_start.wait(timeout=5)
+        return orig_start(self, *args, **kwargs)
+
+    with (
+        patch.object(threading.Thread, "start", _paused_start),
+        patch("hoplyra.standalone_proxies.RemoteRunner", return_value=runner),
+        patch("hoplyra.standalone_proxies._wait_proxy_ready"),
+        patch.object(main, "wait_for_deploy_jobs"),
+        patch.object(main.metrics_cache, "stop"),
+    ):
+        sched_thread = threading.Thread(
+            target=lambda: schedule_recover_stuck_standalone_proxies(
+                get_server_row=lambda sid: fake_server(sid),
+                server_target=lambda row: SimpleNamespace(host=row["host"], port=22, is_local=False),
+            )
+        )
+        sched_thread.start()
+        assert before_start.wait(timeout=5)
+
+        shut_thread = threading.Thread(target=lambda: (main.shutdown(), shutdown_done.set()))
+        shut_thread.start()
+        time.sleep(0.15)
+        assert not shutdown_done.is_set()
+        assert get_standalone_proxy_by_id("prx-start-race")["status"] == "deploying"
+
+        allow_start.set()
+        sched_thread.join(timeout=5)
+        assert shutdown_done.wait(timeout=5)
+        shut_thread.join(timeout=5)
+
+    assert get_standalone_proxy_by_id("prx-start-race")["status"] == "active"

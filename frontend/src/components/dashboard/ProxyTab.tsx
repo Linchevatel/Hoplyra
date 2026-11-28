@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   ChevronDown,
   ChevronUp,
   Copy,
-  ExternalLink,
   Globe,
-  Lock,
+  Loader2,
   Play,
   Plus,
   QrCode,
@@ -15,6 +14,7 @@ import {
   Server,
   ShieldCheck,
   Square,
+  Terminal,
   Trash2,
   Zap,
 } from 'lucide-react'
@@ -26,11 +26,48 @@ import { SocksProxyPanel } from '@/components/dashboard/SocksProxyPanel'
 import { QrImage } from '@/components/ui/QrImage'
 import { AppIcon } from '@/components/ui/AppIcon'
 import { useDashboard } from '@/lib/dashboard-context'
+import { useDeployLogDrawer } from '@/lib/deploy-log-context'
 import { useI18n } from '@/i18n/i18n-context'
 import { standaloneProxiesApi } from '@/lib/api'
 import type { StandaloneProxy, StandaloneProxyType, VpnConfig, VpsServer } from '@/lib/types'
-import { cn } from '@/lib/utils'
+import { cn, copyToClipboard as writeToClipboard } from '@/lib/utils'
 import { getLocationFlag, getLocationCity, countryCodeFromLocation } from '@/lib/country-utils'
+
+function ProxyCopyField({
+  label,
+  value,
+  copied,
+  onCopy,
+  copyTitle,
+  className,
+}: {
+  label: string
+  value: string
+  copied: boolean
+  onCopy: () => void
+  copyTitle: string
+  className?: string
+}) {
+  return (
+    <div className={cn('min-w-0', className)}>
+      <span className="block text-[10px] uppercase tracking-wider text-zinc-500 mb-1">{label}</span>
+      <div className="flex items-center gap-1.5 rounded-lg bg-black/35 border border-white/10 px-2.5 py-1.5">
+        <span className="flex-1 min-w-0 font-mono text-xs text-zinc-200 truncate select-all" title={value}>
+          {value}
+        </span>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="p-1 rounded-md text-zinc-400 hover:text-accent-cyan hover:bg-white/5 transition-colors cursor-pointer shrink-0"
+          aria-label={copyTitle}
+          title={copyTitle}
+        >
+          {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function isChainConfig(config: VpnConfig): boolean {
   return Boolean(config.hops && config.hops.length >= 2)
@@ -86,9 +123,12 @@ const SHADOWSOCKS_CIPHER_OPTIONS: SelectOption[] = [
 
 export function ProxyTab() {
   const { t } = useI18n()
-  const { servers, configs } = useDashboard()
+  const { servers, configs, pushNotification } = useDashboard()
+  const { open: openDeployLog } = useDeployLogDrawer()
 
   const [proxies, setProxies] = useState<StandaloneProxy[]>([])
+  const proxiesRef = useRef<StandaloneProxy[]>([])
+  proxiesRef.current = proxies
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({})
@@ -109,12 +149,17 @@ export function ProxyTab() {
   // QR Modal
   const [qrModalData, setQrModalData] = useState<{ title: string; uri: string } | null>(null)
 
-  // Expanded details per proxy
+  // Expanded details per proxy (expanded by default)
   const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({})
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   // Legacy VPN socks collapse
   const [showVpnSidecars, setShowVpnSidecars] = useState(false)
+
+  const hasDeploying = useMemo(
+    () => proxies.some((p) => p.status === 'deploying'),
+    [proxies],
+  )
 
   const activeTargets = useMemo(
     () => configs.filter((c) => c.status === 'active'),
@@ -150,6 +195,54 @@ export function ProxyTab() {
   useEffect(() => {
     loadProxies()
   }, [])
+
+  useEffect(() => {
+    if (!hasDeploying) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const next = await standaloneProxiesApi.list()
+        if (cancelled) return
+        const prevMap = new Map(proxiesRef.current.map((p) => [p.id, p]))
+        for (const item of next) {
+          const prev = prevMap.get(item.id)
+          if (prev?.status === 'deploying' && item.status !== 'deploying') {
+            if (item.status === 'active') {
+              pushNotification({
+                id: crypto.randomUUID(),
+                type: 'deploy_complete',
+                title: t(`dashboard.proxyTab.types.${item.proxyType}`),
+                message: `${item.name} · ${item.listenPort}`,
+                read: false,
+                createdAt: new Date().toISOString(),
+                serverId: item.serverId,
+              })
+            } else if (item.status === 'error') {
+              pushNotification({
+                id: crypto.randomUUID(),
+                type: 'deploy_error',
+                title: t(`dashboard.proxyTab.types.${item.proxyType}`),
+                message: String(item.meta?.error || item.name),
+                read: false,
+                createdAt: new Date().toISOString(),
+                serverId: item.serverId,
+              })
+            }
+          }
+        }
+        setProxies(next)
+      } catch {
+        // silent retry on next tick
+      }
+    }
+    const timer = setInterval(() => {
+      void poll()
+    }, 1200)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [hasDeploying, pushNotification, t])
 
   async function loadProxies() {
     setLoading(true)
@@ -190,7 +283,7 @@ export function ProxyTab() {
 
     try {
       const portVal = customPort ? parseInt(customPort, 10) : undefined
-      await standaloneProxiesApi.create({
+      const created = await standaloneProxiesApi.create({
         serverId: selectedServerId,
         proxyType: selectedType,
         name: customName.trim() || undefined,
@@ -199,10 +292,15 @@ export function ProxyTab() {
         password: password.trim() || undefined,
         sni: selectedType === 'mtproto' ? sniDomain.trim() || undefined : undefined,
         cipher: selectedType === 'shadowsocks' ? cipher : undefined,
+        asyncDeploy: true,
       })
 
       setModalOpen(false)
-      await loadProxies()
+      setProxies((prev) => [created, ...prev.filter((p) => p.id !== created.id)])
+      openDeployLog(created.id, {
+        title: t(`dashboard.proxyTab.types.${created.proxyType}`),
+        subtitle: created.name,
+      })
     } catch (err: any) {
       setDeployError(err?.detail || err?.message || 'Deployment failed')
     } finally {
@@ -239,14 +337,15 @@ export function ProxyTab() {
     }
   }
 
-  function copyToClipboard(text: string, key: string) {
-    navigator.clipboard.writeText(text)
+  async function copyToClipboard(text: string, key: string) {
+    const ok = await writeToClipboard(text)
+    if (!ok) return
     setCopiedKey(key)
-    setTimeout(() => setCopiedKey(null), 2000)
+    setTimeout(() => setCopiedKey((prev) => (prev === key ? null : prev)), 2000)
   }
 
   function toggleDetails(id: string) {
-    setExpandedDetails((prev) => ({ ...prev, [id]: !prev[id] }))
+    setExpandedDetails((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))
   }
 
   return (
@@ -316,12 +415,23 @@ export function ProxyTab() {
             const typeConf = PROXY_TYPE_CONFIG[proxy.proxyType] || PROXY_TYPE_CONFIG.socks5
             const Icon = typeConf.icon
             const isBusy = Boolean(actionBusy[proxy.id])
-            const isExpanded = Boolean(expandedDetails[proxy.id])
+            const isDeploying = proxy.status === 'deploying'
+            const isError = proxy.status === 'error'
+            const isExpanded = expandedDetails[proxy.id] ?? true
+            const openProxyLog = () =>
+              openDeployLog(proxy.id, {
+                title: t(`dashboard.proxyTab.types.${proxy.proxyType}`),
+                subtitle: proxy.name,
+              })
 
             return (
               <Card
                 key={proxy.id}
-                className="p-5 border border-white/10 bg-zinc-900/40 hover:border-white/20 transition-all rounded-2xl"
+                className={cn(
+                  'p-5 border border-white/10 bg-zinc-900/40 hover:border-white/20 transition-all rounded-2xl',
+                  isDeploying && 'border-amber-500/25 bg-amber-500/[0.04]',
+                  isError && 'border-rose-500/25 bg-rose-500/[0.03]',
+                )}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="flex items-start sm:items-center gap-3.5">
@@ -341,22 +451,44 @@ export function ProxyTab() {
                         >
                           {t(`dashboard.proxyTab.types.${proxy.proxyType}`)}
                         </span>
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border',
-                            proxy.status === 'active'
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                              : 'bg-zinc-800 text-zinc-400 border-zinc-700',
-                          )}
-                        >
+                        {isDeploying ? (
+                          <button
+                            type="button"
+                            onClick={openProxyLog}
+                            title={t('deployLog.open')}
+                            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20 transition-colors cursor-pointer"
+                          >
+                            <Loader2 size={11} className="animate-spin" />
+                            {t('deployLog.status.deploying')}
+                          </button>
+                        ) : isError ? (
+                          <button
+                            type="button"
+                            onClick={openProxyLog}
+                            title={t('deployLog.open')}
+                            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20 transition-colors cursor-pointer"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                            {t('deployLog.status.error')}
+                          </button>
+                        ) : (
                           <span
                             className={cn(
-                              'w-1.5 h-1.5 rounded-full',
-                              proxy.status === 'active' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500',
+                              'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border',
+                              proxy.status === 'active'
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                : 'bg-zinc-800 text-zinc-400 border-zinc-700',
                             )}
-                          />
-                          {proxy.status}
-                        </span>
+                          >
+                            <span
+                              className={cn(
+                                'w-1.5 h-1.5 rounded-full',
+                                proxy.status === 'active' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500',
+                              )}
+                            />
+                            {proxy.status}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-3 text-xs text-text-muted mt-1 flex-wrap">
@@ -367,13 +499,28 @@ export function ProxyTab() {
                         <span>•</span>
                         <span>
                           {t('dashboard.proxyTab.card.port')}:{' '}
-                          <strong className="text-zinc-300 font-mono">{proxy.listenPort}</strong>
+                          <strong className="text-zinc-300 font-mono">
+                            {proxy.listenPort > 0 ? proxy.listenPort : '…'}
+                          </strong>
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap justify-end">
+                    {(isDeploying || isError) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={openProxyLog}
+                        className="text-xs border border-amber-500/25 text-amber-300 hover:text-amber-200 hover:bg-amber-500/10"
+                        title={t('deployLog.open')}
+                      >
+                        <Terminal size={13} className="mr-1" />
+                        {t('deployLog.title')}
+                      </Button>
+                    )}
+
                     {proxy.clientUri && (
                       <>
                         {proxy.proxyType === 'mtproto' && (
@@ -425,30 +572,32 @@ export function ProxyTab() {
                       </>
                     )}
 
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={isBusy}
-                      onClick={() => handleToggleStatus(proxy)}
-                      className="text-xs border border-white/10 text-zinc-300"
-                    >
-                      {proxy.status === 'active' ? (
-                        <>
-                          <Square size={12} className="mr-1 text-amber-400" />
-                          {t('dashboard.proxyTab.card.stop')}
-                        </>
-                      ) : (
-                        <>
-                          <Play size={12} className="mr-1 text-emerald-400" />
-                          {t('dashboard.proxyTab.card.start')}
-                        </>
-                      )}
-                    </Button>
+                    {(proxy.status === 'active' || isDeploying || (proxy.clientUri && proxy.listenPort > 0)) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy || isDeploying}
+                        onClick={() => handleToggleStatus(proxy)}
+                        className="text-xs border border-white/10 text-zinc-300"
+                      >
+                        {proxy.status === 'active' ? (
+                          <>
+                            <Square size={12} className="mr-1 text-amber-400" />
+                            {t('dashboard.proxyTab.card.stop')}
+                          </>
+                        ) : (
+                          <>
+                            <Play size={12} className="mr-1 text-emerald-400" />
+                            {t('dashboard.proxyTab.card.start')}
+                          </>
+                        )}
+                      </Button>
+                    )}
 
                     <Button
                       size="sm"
                       variant="ghost"
-                      disabled={isBusy}
+                      disabled={isBusy || isDeploying}
                       onClick={() => handleDeleteProxy(proxy)}
                       className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
                       title={t('dashboard.proxyTab.card.delete')}
@@ -476,6 +625,12 @@ export function ProxyTab() {
                   </div>
                 </div>
 
+                {isError && proxy.meta?.error && (
+                  <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                    {String(proxy.meta.error)}
+                  </div>
+                )}
+
                 {/* Direct Connection URI Bar */}
                 {proxy.clientUri && (
                   <div className="mt-3.5 pt-3 border-t border-white/5 flex items-center justify-between gap-2 bg-black/40 rounded-xl px-3 py-2">
@@ -487,48 +642,70 @@ export function ProxyTab() {
 
                 {/* Expanded Details */}
                 {isExpanded && (
-                  <div className="mt-3 pt-3 border-t border-white/5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs text-text-muted bg-white/[0.02] p-3 rounded-xl">
+                  <div className="mt-3 pt-3 border-t border-white/5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs text-text-muted bg-white/[0.02] p-3 rounded-xl">
+                    {(server?.host || proxy.meta?.serverHost) && (
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.host')}
+                        value={String(server?.host || proxy.meta?.serverHost)}
+                        copied={copiedKey === `${proxy.id}:host`}
+                        onCopy={() => void copyToClipboard(String(server?.host || proxy.meta?.serverHost), `${proxy.id}:host`)}
+                        copyTitle={t('common.copy')}
+                      />
+                    )}
+                    {proxy.listenPort > 0 && (
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.port')}
+                        value={String(proxy.listenPort)}
+                        copied={copiedKey === `${proxy.id}:port`}
+                        onCopy={() => void copyToClipboard(String(proxy.listenPort), `${proxy.id}:port`)}
+                        copyTitle={t('common.copy')}
+                      />
+                    )}
                     {proxy.meta?.username && (
-                      <div>
-                        <span className="block text-zinc-500">{t('dashboard.proxyTab.card.username')}:</span>
-                        <span className="font-mono text-zinc-200 select-all">{proxy.meta.username}</span>
-                      </div>
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.card.username')}
+                        value={String(proxy.meta.username)}
+                        copied={copiedKey === `${proxy.id}:user`}
+                        onCopy={() => void copyToClipboard(String(proxy.meta.username), `${proxy.id}:user`)}
+                        copyTitle={t('common.copy')}
+                      />
                     )}
                     {proxy.meta?.password && (
-                      <div>
-                        <span className="block text-zinc-500">{t('dashboard.proxyTab.card.password')}:</span>
-                        <span className="font-mono text-zinc-200 select-all">{proxy.meta.password}</span>
-                      </div>
-                    )}
-                    {proxy.meta?.secret && (
-                      <div className="col-span-full">
-                        <span className="block text-zinc-500">{t('dashboard.proxyTab.card.secret')}:</span>
-                        <span className="font-mono text-zinc-200 break-all select-all">{proxy.meta.secret}</span>
-                      </div>
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.card.password')}
+                        value={String(proxy.meta.password)}
+                        copied={copiedKey === `${proxy.id}:pass`}
+                        onCopy={() => void copyToClipboard(String(proxy.meta.password), `${proxy.id}:pass`)}
+                        copyTitle={t('common.copy')}
+                      />
                     )}
                     {proxy.meta?.sni && (
-                      <div>
-                        <span className="block text-zinc-500">{t('dashboard.proxyTab.card.sni')}:</span>
-                        <span className="font-mono text-zinc-200">{proxy.meta.sni}</span>
-                      </div>
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.card.sni')}
+                        value={String(proxy.meta.sni)}
+                        copied={copiedKey === `${proxy.id}:sni`}
+                        onCopy={() => void copyToClipboard(String(proxy.meta.sni), `${proxy.id}:sni`)}
+                        copyTitle={t('common.copy')}
+                      />
                     )}
                     {proxy.meta?.cipher && (
-                      <div>
-                        <span className="block text-zinc-500">{t('dashboard.proxyTab.card.cipher')}:</span>
-                        <span className="font-mono text-zinc-200">{proxy.meta.cipher}</span>
-                      </div>
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.card.cipher')}
+                        value={String(proxy.meta.cipher)}
+                        copied={copiedKey === `${proxy.id}:cipher`}
+                        onCopy={() => void copyToClipboard(String(proxy.meta.cipher), `${proxy.id}:cipher`)}
+                        copyTitle={t('common.copy')}
+                      />
                     )}
-                    {proxy.containerName && (
-                      <div>
-                        <span className="block text-zinc-500">Container:</span>
-                        <span className="font-mono text-zinc-400">{proxy.containerName}</span>
-                      </div>
-                    )}
-                    {proxy.runtime && (
-                      <div>
-                        <span className="block text-zinc-500">Runtime:</span>
-                        <span className="font-mono text-zinc-400">{proxy.runtime}</span>
-                      </div>
+                    {proxy.meta?.secret && (
+                      <ProxyCopyField
+                        label={t('dashboard.proxyTab.card.secret')}
+                        value={String(proxy.meta.secret)}
+                        copied={copiedKey === `${proxy.id}:secret`}
+                        onCopy={() => void copyToClipboard(String(proxy.meta.secret), `${proxy.id}:secret`)}
+                        copyTitle={t('common.copy')}
+                        className="col-span-full"
+                      />
                     )}
                   </div>
                 )}

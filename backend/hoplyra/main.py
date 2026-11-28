@@ -522,8 +522,11 @@ async def stop_health_checks() -> None:
 
 @app.on_event("startup")
 def startup() -> None:
+    from hoplyra.standalone_proxies import schedule_recover_stuck_standalone_proxies
+
     init_db()
     schedule_recover_stuck_deploying()
+    schedule_recover_stuck_standalone_proxies(get_server_row=_get_server_row, server_target=_server_target)
     warn_if_insecure()
     metrics_cache.start(_load_remote_server_rows)
     threading.Thread(target=metrics_cache.refresh, daemon=True, name="hoplyra-metrics-initial").start()
@@ -538,7 +541,10 @@ def startup() -> None:
 
 @app.on_event("shutdown")
 def shutdown() -> None:
+    from hoplyra.standalone_proxies import wait_for_proxy_deploy_jobs
+
     wait_for_deploy_jobs(timeout=120)
+    wait_for_proxy_deploy_jobs(timeout=120)
     metrics_cache.stop()
 
 
@@ -2303,9 +2309,12 @@ def create_standalone_proxy(payload: dict[str, Any]) -> dict[str, Any]:
             secret=payload.get("secret"),
             sni=payload.get("sni"),
             cipher=payload.get("cipher"),
-            get_server_row=_get_server_or_404,
+            async_deploy=bool(payload.get("asyncDeploy", False)),
+            get_server_row=_get_server_row,
             server_target=_server_target,
         )
+    except HTTPException:
+        raise
     except StandaloneProxyError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -2315,12 +2324,18 @@ def create_standalone_proxy(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/standalone-proxies/{proxy_id}/stop")
 def stop_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
-    from hoplyra.standalone_proxies import stop_standalone_proxy
+    from hoplyra.standalone_proxies import StandaloneProxyConflictError, StandaloneProxyError, stop_standalone_proxy
 
     try:
-        return stop_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+        return stop_standalone_proxy(proxy_id, get_server_row=_get_server_row, server_target=_server_target)
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except StandaloneProxyConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except StandaloneProxyError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         log.exception("Failed to stop proxy %s", proxy_id)
         raise HTTPException(500, str(exc)) from exc
@@ -2328,12 +2343,18 @@ def stop_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
 
 @app.post("/api/standalone-proxies/{proxy_id}/start")
 def start_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
-    from hoplyra.standalone_proxies import start_standalone_proxy
+    from hoplyra.standalone_proxies import StandaloneProxyConflictError, StandaloneProxyError, start_standalone_proxy
 
     try:
-        return start_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+        return start_standalone_proxy(proxy_id, get_server_row=_get_server_row, server_target=_server_target)
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except StandaloneProxyConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except StandaloneProxyError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         log.exception("Failed to start proxy %s", proxy_id)
         raise HTTPException(500, str(exc)) from exc
@@ -2341,12 +2362,18 @@ def start_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
 
 @app.delete("/api/standalone-proxies/{proxy_id}")
 def delete_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
-    from hoplyra.standalone_proxies import delete_standalone_proxy
+    from hoplyra.standalone_proxies import StandaloneProxyConflictError, StandaloneProxyError, delete_standalone_proxy
 
     try:
-        return delete_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+        return delete_standalone_proxy(proxy_id, get_server_row=_get_server_row, server_target=_server_target)
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except StandaloneProxyConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except StandaloneProxyError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         log.exception("Failed to delete proxy %s", proxy_id)
         raise HTTPException(500, str(exc)) from exc
