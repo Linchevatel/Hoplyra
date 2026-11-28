@@ -4,31 +4,34 @@
 
 </div>
 
-> **Self-hosted VPN dashboard.** Your VPS, your rules — no cloud provider or middlemen.
+> **Self-hosted VPN & proxy orchestration dashboard.** Your VPS nodes, your rules — no cloud provider or middlemen.
 
-Hoplyra is not just a panel for a single VPN. It is a **multi-hop chain builder**: you compose a route from different protocols and servers, and the system links the hops, configures routing, and delivers **one client config** — at the chain entry.
-
----
-
-## 🧅 AmneziaWG 3.1 — Default and Stealth
-
-Hoplyra speaks the full **AmneziaWG 3.1** protocol with two one-click modes:
-
-- **Default** — plain AWG 3.1 with no obfuscation, for networks where WireGuard is not filtered
-- **Stealth** — automatic obfuscation profile: junk packets (`Jc/Jmin/Jmax`), packet-size shifts (`S1–S4`), magic headers (`H1–H4`), and a CPS mimicry chain (`I1–I5`)
-
-Stealth ships **QUIC / TLS / DNS / SIP / STUN** mimicry profiles out of the box. Advanced 3.1 options are available when you need full control: **`HeaderProtectionKey`**, **`ContentPaddingAddition`**, **`RandomTrailers`**, **`DisableCookies`**.
+Hoplyra is not just a panel for a single VPN. It is a **multi-hop chain builder and node orchestrator**: compose routes from different protocols across your own servers, deploy standalone proxies or **Hysteria Realms** relay brokers, monitor node reachability, and deliver ready-to-import client configs from a single **Ink Amber** web UI.
 
 ---
 
-## 🔗 Chains
+## 🛡 Protocols
 
-A typical VPN is one tunnel to one server. Hoplyra lets you **combine multiple protocols into a single route** across your VPS nodes:
+| | ID | Protocol | Transport / Port | Highlights |
+|:-:|---|----------|------------------|------------|
+| <img src="frontend/src/assets/icons/amneziawg.png" width="72" alt="AmneziaWG"> | `awg` | **AmneziaWG 3.1** | `55424/udp` | Containerized; **Default** & **Stealth** modes, CPS mimicry (`I1–I5`), `HPK` |
+| <img src="frontend/src/assets/icons/wireguard.png" width="72" alt="WireGuard"> | `wg` | **WireGuard** | `51820/udp` | Containerized fast kernel/userspace tunnel, multi-peer, QR configs |
+| <img src="frontend/src/assets/icons/openvpn.png" width="72" alt="OpenVPN"> | `openvpn` | **OpenVPN** | `1194/udp` or `tcp` | Managed PKI, UDP/TCP profiles, multi-client `.ovpn` exports |
+| <img src="frontend/src/assets/icons/xray.png" width="72" alt="Xray"> | `xray` | **Xray VLESS** | `443/tcp` | TLS / **REALITY**, ClientHello fragmentation, Chrome fingerprint, multi-peer URIs |
+| <img src="frontend/src/assets/icons/hysteria2.png" width="72" alt="Hysteria 2"> | `hysteria2` | **Hysteria 2** | `443/udp` | QUIC congestion control, port hopping, cert pinning, multi-peer & QR |
+| <img src="frontend/src/assets/icons/shadowquic.png" width="72" alt="ShadowQUIC"> | `shadowquic` | **ShadowQUIC** | `443/udp` | **0-RTT** QUIC proxy with **JLS** TLS SNI camouflage and zero cert overhead |
+| <img src="frontend/src/assets/icons/tor.png" width="72" alt="Tor"> | `tor` | **Tor (SOCKS)** | `9050/tcp` | Relay hop or rotating-IP exit inside multi-hop chains |
 
-- **Mix protocols** — AWG, WireGuard, OpenVPN, Xray, and Tor in one chain, each hop on its own server
-- **One config for the client** — connect only to the entry; middle hops and exit are configured for you
-- **Tor in the chain** — as a relay hop or as an exit with a changing IP
-- **Smart deploy** — background deployment with hop-by-hop progress: gateway, iptables, containers, and inter-server links without manual SSH
+### 🧅 AmneziaWG 3.1 — Default and Stealth
+
+Hoplyra speaks full **AmneziaWG 3.1** in an isolated container (`hoplyra-awg:1`) with two one-click modes:
+
+- **Default** — plain AWG 3.1 without obfuscation when WireGuard is unfiltered
+- **Stealth** — automatic obfuscation profile: junk packets (`Jc/Jmin/Jmax`), packet-size shifts (`S1–S4`), magic headers (`H1–H4`), and CPS mimicry chains (`I1–I5`) with **QUIC / TLS / DNS / SIP / STUN** presets plus `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, and `DisableCookies`
+
+---
+
+## 🔗 Multi-Chains
 
 <div align="center">
 
@@ -36,58 +39,56 @@ A typical VPN is one tunnel to one server. Hoplyra lets you **combine multiple p
 
 </div>
 
-**Common patterns:** `AWG → Tor → Xray`, **WireGuard → Xray → Tor**, **OpenVPN → Tor → AmneziaWG** — and many other combinations.
+| | Capability | How it works |
+|:-:|------------|--------------|
+| <img src="frontend/src/assets/icons/chain.png" width="72" alt="Multi-hop chains"> | **Cross-protocol routing** | Combine **AWG, WireGuard, OpenVPN, Xray, Hysteria 2, ShadowQUIC, and Tor** across separate VPS nodes into a single route |
+| <img src="frontend/src/assets/icons/servers.png" width="72" alt="Per-config isolation"> | **Side-by-side isolation** | Every deployment gets its own **container, interface, port, and subnet** — multiple configs coexist on the same server |
+| <img src="frontend/src/assets/icons/global.png" width="72" alt="Bypass RU split tunneling"> | **Bypass RU split tunneling** | Client-side exact 32-bit inverted IPv4 `AllowedIPs` routing so Russian domestic subnets go direct while everything else uses the tunnel |
+| <img src="frontend/src/assets/icons/activity2.png" width="72" alt="Live deploy leases and logs"> | **Resilient live deploy** | Background **multi-process SQLite leases** with heartbeats, crash recovery, and **real-time SSE deploy log drawer** with automatic secret redaction |
 
-Background deployments use **multi-process deploy leases** with heartbeats and crash recovery to coordinate workers and recover interrupted jobs.
-
-Multiple configurations can run **side by side on the same server** — each one gets its own **container, interface, port, and subnet**, so protocols never override each other.
-
-The web UI uses the **Ink Amber** dark theme, bento-style cards, and refreshed gold icons.
-
----
-
-## ⚙️ Installation
-
-Hoplyra is a **server application** with a web UI. Deploy the backend on a Linux server — it serves the dashboard on one port.
-
-**Dependencies** (Debian / Ubuntu example):
-
-```bash
-sudo apt install make python3-venv podman podman-compose
-```
-
-**Install:**
-
-```bash
-git clone https://github.com/Linchevatel/Hoplyra.git
-cd Hoplyra
-make install
-```
-
-Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**) and sign in with **`admin` / `admin`**.
-
-**Container images:**
-
-| Image | Purpose |
-|-------|---------|
-| `hoplyra-gateway:1` | Xray + Tor + iptables (AWG/WG/OpenVPN chains) |
-| `hoplyra-tor:1` | Tor sidecar |
-| `hoplyra-xray:1` | Xray relay/exit |
-| `hoplyra-wg:1` | WireGuard in a container |
-| `hoplyra-openvpn:4` | OpenVPN + PKI |
-| `hoplyra-socks:1` | 3proxy sidecar for standalone SOCKS5 |
+**Common patterns:** `AWG → Tor → Xray`, `Xray → Tor → Xray`, `Hysteria 2 → Tor`, `ShadowQUIC → Tor`, `OpenVPN → AWG` — clients receive **one entry config** (with multi-peer management and live per-config traffic stats on the **Configs** page).
 
 ---
 
-## 📊 Status
+## 🌐 Hysteria Realms
 
-The **Status** tab shows live health of your control host and every added VPS:
+<div align="center">
 
-- **CPU, memory, disk, load average, uptime**, and network throughput
-- Per-server **latency** and container list where available
-- **Live polling** (~1s) when the API can reach servers over SSH
+![Hysteria Realms relay architecture](backend/assets/realms.png)
 
-Use it to spot overloaded nodes, offline hosts, and whether metrics collection is working before you deploy chains.
+</div>
+
+The **Hysteria Realms** tab orchestrates high-speed QUIC tunnel relays via a broker + agent architecture (`hoplyra-realm-server:1`):
+
+| | Feature | Purpose |
+|:-:|---------|---------|
+| <img src="frontend/src/assets/icons/realms.png" width="72" alt="Realm Broker"> | **Realm Broker** | Central control broker coordinating authenticated entry/exit relay nodes on your VPS fleet |
+| <img src="frontend/src/assets/icons/hysteria2.png" width="72" alt="QUIC Tunneling"> | **High-speed QUIC transport** | Low-latency UDP/QUIC forwarding resilient to packet loss on mobile and cross-border links |
+| <img src="frontend/src/assets/icons/chain.png" width="72" alt="Peer & Chain Tunnels"> | **Direct peer & chain tunnels** | Attach local SOCKS5/VPN entrypoints or chain downstream servers with health tracking and automatic teardown |
+
+---
+
+## 🧦 Proxies (VPN-Attached & Standalone)
+
+<div align="center">
+
+![Proxy flows](backend/assets/proxy.png)
+
+</div>
+
+The **Proxy** tab covers both **VPN/chain-attached SOCKS5** sidecars and **standalone containerized proxies** deployable directly onto any VPS with Docker or Podman:
+
+| | Type | Engine | Highlights |
+|:-:|------|--------|------------|
+| <img src="frontend/src/assets/icons/socks2.png" width="72" alt="Attached SOCKS5"> | **Attached SOCKS5** | `hoplyra-socks:1` (`3proxy`) | Toggle on/off **without redeploy** on any active VPN or multi-hop chain (`entry → … → exit`) |
+| <img src="frontend/src/assets/icons/socks.png" width="72" alt="Standalone SOCKS5"> | **Standalone SOCKS5** | `hoplyra-gost:1` (`gost`) | Auto-allocated port (`1080` default), optional auth, QR & `socks5://` share URI |
+| <img src="backend/assets/protocols/badges/https.png" width="72" alt="Secure HTTPS Proxy"> | **Secure HTTPS** | `hoplyra-gost:1` (`gost`) | HTTP/HTTPS `CONNECT` proxy over TLS (`8443` default), self-signed cert bundle, `https://` client URI |
+| <img src="backend/assets/protocols/badges/mtproto.png" width="72" alt="MTProto Fake-TLS"> | **MTProto Fake-TLS** | `hoplyra-mtg:2` (`mtg`) | Telegram proxy (`8443` default) with `ee…` **Fake-TLS** SNI camouflage and `tg://proxy` / `t.me/proxy` QR & links |
+| <img src="backend/assets/protocols/badges/shadowsocks.png" width="72" alt="Shadowsocks"> | **Shadowsocks** | `hoplyra-gost:1` (`gost`) | AEAD ciphers (`AEAD_CHACHA20_POLY1305`, `AEAD_AES_256_GCM`, `AEAD_AES_128_GCM`), `ss://` SIP002 URI & QR |
+
+---
+
+## 📊 Status & Censor Check
 
 <div align="center">
 
@@ -95,44 +96,69 @@ Use it to spot overloaded nodes, offline hosts, and whether metrics collection i
 
 </div>
 
+| | Tool | Capabilities |
+|:-:|------|--------------|
+| <img src="frontend/src/assets/icons/activity2.png" width="72" alt="Node telemetry"> | **Live Server Status** | Real-time SSH polling (~1s) for **CPU, RAM, disk, load average, uptime, network throughput, latency**, and running containers without head-of-line blocking |
+| <img src="backend/assets/protocols/badges/censor.png" width="72" alt="Censor Check"> | **Censor Check** | Active reachability & DPI/blocking probe from Russian network vantage points before you deploy configs onto a node |
+| <img src="frontend/src/assets/icons/servers.png" width="72" alt="SSH Vault"> | **Flexible SSH Auth** | Connect VPS nodes via **SSH private keys, system ssh-agent, or encrypted passwords** stored safely in SQLite |
+
 ---
 
-## 🧦 SOCKS5 proxy
-
-The **Proxy** tab exposes an optional **SOCKS5** server for every active VPN or chain:
-
-- **Purpose** — browser or app proxy through the same path as your VPN/chain (entry → … → exit)
-- **When** — config status is **active**; enable/disable **without redeploy**
-- **Where in UI** — **Proxy** tab: filter by all routes, chains, or single VPN; collapse/expand cards
+## 🔐 Security, Backups & Updates
 
 <div align="center">
 
-![SOCKS5 proxy flow](backend/assets/proxy.png)
+![Security, backups and updates](backend/assets/security.png)
 
 </div>
 
----
-
-## 🛡 Protocols
-
-| | ID | Protocol | Port |
-|:-:|---|----------|------|
-| <img src="backend/assets/protocols/badges/wg.png" width="44" alt="WireGuard"> | `wg` | **WireGuard** | 51820/udp |
-| <img src="backend/assets/protocols/badges/awg.png" width="44" alt="AmneziaWG"> | `awg` | **AmneziaWG 3.1** | 55424/udp |
-| <img src="backend/assets/protocols/badges/openvpn.png" width="44" alt="OpenVPN"> | `openvpn` | **OpenVPN** | 1194/udp or tcp |
-| <img src="backend/assets/protocols/badges/xray.png" width="44" alt="Xray"> | `xray` | **Xray VLESS + TLS / REALITY** | 443/tcp |
-| <img src="backend/assets/protocols/badges/tor.png" width="44" alt="Tor"> | `tor` | **Tor (SOCKS)** | 9050/tcp |
+| | Feature | Details |
+|:-:|---------|---------|
+| <img src="frontend/src/assets/icons/lock.png" width="72" alt="Panel security"> | **Panel Auth & Auto-HTTPS** | Local admin auth with **HTTP-only** secure session cookies, brute-force rate limiting (`Retry-After`), encrypted VPS credentials, and automatic TLS certs (`scripts/generate-ssl.sh`) |
+| <img src="frontend/src/assets/icons/two-factor.png" width="72" alt="TOTP 2FA"> | **Hardened 2FA (TOTP)** | Built-in RFC 6238 **TOTP authenticator** with offline QR code generation and single-use backup recovery codes |
+| <img src="frontend/src/assets/icons/backup.png" width="72" alt="Encrypted Backups"> | **Encrypted Backups** | Export and restore full Hoplyra state (servers, configs, chains, keys, proxies) from **Settings** |
+| <img src="backend/assets/protocols/badges/update.png" width="72" alt="1-Click Update"> | **1-Click System Update** | Check GitHub releases and upgrade Hoplyra in place from the **Settings** tab with **hardened automatic rollback** on failure |
 
 ---
 
-## 🔐 Panel login
+## ⚙️ Installation
 
-The dashboard is protected by a **local administrator account** (not a cloud signup):
+Hoplyra is a **self-hosted Linux server application** serving both the API and web UI on a single HTTPS port (`8787`).
 
-- After `make install`, sign in at **https://YOUR_SERVER_IP:8787** (or **https://127.0.0.1:8787**) with **`admin` / `admin`**
-- **Change the password** in **Settings** on first use
-- Sessions use **HTTP-only cookies** (Secure flag on HTTPS); SSH passwords for VPS are stored **encrypted** in the local SQLite database
-- **HTTPS** is enabled automatically — certificates are generated on `make install` (`scripts/generate-ssl.sh`), or use an Nginx/Caddy reverse proxy
+**Dependencies** (Debian / Ubuntu example):
+
+```bash
+sudo apt install make python3-venv podman podman-compose
+```
+
+*(Docker + Docker Compose are also supported on managed VPS nodes.)*
+
+**Install & Start:**
+
+```bash
+git clone https://github.com/Linchevatel/Hoplyra.git
+cd Hoplyra
+make install
+```
+
+Open **https://YOUR_SERVER_IP:8787** (locally: **https://127.0.0.1:8787**), sign in with **`admin` / `admin`**, then immediately **change your password** and enable **2FA** in **Settings**.
+
+**Container images:**
+
+| Image | Purpose |
+|-------|---------|
+| `hoplyra-gateway:1` | Xray + Tor + iptables gateway for AWG/WG/OpenVPN chains |
+| `hoplyra-tor:1` | Tor relay & rotating-exit sidecar |
+| `hoplyra-xray:1` | Xray VLESS + TLS / REALITY relay & exit |
+| `hoplyra-wg:2` | WireGuard containerized server |
+| `hoplyra-awg:1` | AmneziaWG 3.1 containerized server |
+| `hoplyra-openvpn:5` | OpenVPN + PKI server |
+| `hoplyra-hysteria2:1` | Hysteria 2 QUIC server |
+| `hoplyra-shadowquic:1` | ShadowQUIC 0-RTT QUIC + JLS server |
+| `hoplyra-realm-server:1` | Hysteria Realms broker & tunnel agent |
+| `hoplyra-socks:1` | `3proxy` sidecar for VPN/chain-attached SOCKS5 |
+| `hoplyra-gost:1` | `gost` server for standalone SOCKS5, Secure HTTPS, and Shadowsocks |
+| `hoplyra-mtg:2` | `mtg` v2 server for MTProto Fake-TLS proxies |
 
 ---
 
