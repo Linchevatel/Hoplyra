@@ -1799,8 +1799,8 @@ def _require_deploy_log_config(config_id: str) -> None:
         return
     with connect() as conn:
         row = conn.execute(
-            "SELECT id FROM configs WHERE id=? UNION SELECT id FROM realms_tunnels WHERE id=? UNION SELECT id FROM realms_brokers WHERE id=?",
-            (config_id, config_id, config_id),
+            "SELECT id FROM configs WHERE id=? UNION SELECT id FROM realms_tunnels WHERE id=? UNION SELECT id FROM realms_brokers WHERE id=? UNION SELECT id FROM standalone_proxies WHERE id=?",
+            (config_id, config_id, config_id, config_id),
         ).fetchone()
         if not row:
             raise HTTPException(404, "Config not found")
@@ -2262,4 +2262,95 @@ def _mount_frontend(app: FastAPI) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Standalone Proxies (SOCKS5, HTTPS, MTProto, Shadowsocks)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/standalone-proxies")
+def get_standalone_proxies() -> list[dict[str, Any]]:
+    from hoplyra.standalone_proxies import list_standalone_proxies
+
+    return list_standalone_proxies()
+
+
+@app.get("/api/standalone-proxies/{proxy_id}")
+def get_standalone_proxy(proxy_id: str) -> dict[str, Any]:
+    from hoplyra.standalone_proxies import get_standalone_proxy_by_id
+
+    try:
+        return get_standalone_proxy_by_id(proxy_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/standalone-proxies")
+def create_standalone_proxy(payload: dict[str, Any]) -> dict[str, Any]:
+    from hoplyra.standalone_proxies import StandaloneProxyError, deploy_standalone_proxy
+
+    server_id = payload.get("serverId")
+    proxy_type = payload.get("proxyType")
+    if not server_id or not proxy_type:
+        raise HTTPException(400, "serverId and proxyType are required")
+
+    try:
+        return deploy_standalone_proxy(
+            server_id=server_id,
+            proxy_type=proxy_type,
+            name=payload.get("name"),
+            listen_port=payload.get("listenPort"),
+            username=payload.get("username"),
+            password=payload.get("password"),
+            secret=payload.get("secret"),
+            sni=payload.get("sni"),
+            cipher=payload.get("cipher"),
+            get_server_row=_get_server_or_404,
+            server_target=_server_target,
+        )
+    except StandaloneProxyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Failed to deploy standalone proxy")
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/api/standalone-proxies/{proxy_id}/stop")
+def stop_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
+    from hoplyra.standalone_proxies import stop_standalone_proxy
+
+    try:
+        return stop_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Failed to stop proxy %s", proxy_id)
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/api/standalone-proxies/{proxy_id}/start")
+def start_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
+    from hoplyra.standalone_proxies import start_standalone_proxy
+
+    try:
+        return start_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Failed to start proxy %s", proxy_id)
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.delete("/api/standalone-proxies/{proxy_id}")
+def delete_proxy_endpoint(proxy_id: str) -> dict[str, Any]:
+    from hoplyra.standalone_proxies import delete_standalone_proxy
+
+    try:
+        return delete_standalone_proxy(proxy_id, get_server_row=_get_server_or_404, server_target=_server_target)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Failed to delete proxy %s", proxy_id)
+        raise HTTPException(500, str(exc)) from exc
+
+
 _mount_frontend(app)
+

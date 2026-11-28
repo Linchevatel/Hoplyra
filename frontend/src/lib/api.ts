@@ -1,5 +1,5 @@
 import { assertAwg, versionParams, type AwgParams } from './awg'
-import type { ChainHop, OpenVpnTransport, Protocol, RealmBroker, RealmTunnel, RealmTunnelConfig, RouteTestResult, ServerMetrics, ServerPrepareProgress, VpnConfig, VpsServer } from './types'
+import type { ChainHop, CreateStandaloneProxyPayload, OpenVpnTransport, Protocol, RealmBroker, RealmTunnel, RealmTunnelConfig, RouteTestResult, ServerMetrics, ServerPrepareProgress, StandaloneProxy, VpnConfig, VpsServer } from './types'
 
 const BASE = import.meta.env?.VITE_API_URL ?? ''
 
@@ -525,5 +525,18 @@ export const realmsApi = {
     request<{ logs: string }>(`/api/realms/tunnels/${tunnelId}/logs${tail ? `?tail=${tail}` : ''}`),
   getBrokerLogs: (brokerId: string, tail?: number) =>
     request<{ logs: string }>(`/api/realms/brokers/${brokerId}/logs${tail ? `?tail=${tail}` : ''}`),
+}
+
+export const standaloneProxiesApi = {
+  list: () => request<StandaloneProxy[]>('/api/standalone-proxies'),
+  get: (id: string) => request<StandaloneProxy>(`/api/standalone-proxies/${id}`),
+  create: (data: CreateStandaloneProxyPayload) =>
+    request<StandaloneProxy>('/api/standalone-proxies', { method: 'POST', body: JSON.stringify(data) }),
+  stop: (id: string) =>
+    request<{ status: string }>(`/api/standalone-proxies/${id}/stop`, { method: 'POST' }),
+  start: (id: string) =>
+    request<{ status: string }>(`/api/standalone-proxies/${id}/start`, { method: 'POST' }),
+  delete: (id: string) =>
+    request<{ status: string }>(`/api/standalone-proxies/${id}`, { method: 'DELETE' }),
 }
 

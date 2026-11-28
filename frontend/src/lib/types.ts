@@ -243,3 +243,32 @@ export interface RealmTunnelConfig {
   shareUri: string
 }
 
+export type StandaloneProxyType = 'socks5' | 'https' | 'mtproto' | 'shadowsocks'
+
+export interface StandaloneProxy {
+  id: string
+  serverId: string
+  name: string
+  proxyType: StandaloneProxyType
+  listenPort: number
+  status: 'active' | 'inactive' | 'error' | 'deploying'
+  containerName?: string
+  instancePath?: string
+  runtime?: string
+  clientUri: string
+  createdAt: string
+  meta: Record<string, any>
+}
+
+export interface CreateStandaloneProxyPayload {
+  serverId: string
+  proxyType: StandaloneProxyType
+  name?: string
+  listenPort?: number
+  username?: string
+  password?: string
+  secret?: string
+  sni?: string
+  cipher?: string
+}
+

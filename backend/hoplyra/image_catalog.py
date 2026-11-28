@@ -16,6 +16,8 @@ HOPYLRA_IMAGES: tuple[tuple[str, str], ...] = (
     ("hoplyra-awg:1", "awg"),
     ("hoplyra-shadowquic:1", "shadowquic"),
     ("hoplyra-realm-server:1", "hysteria-realm-server"),
+    ("hoplyra-gost:1", "gost"),
+    ("hoplyra-mtg:2", "mtg"),
 )
 
 

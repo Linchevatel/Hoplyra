@@ -106,6 +106,21 @@ def init_db() -> None:
                 meta_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS standalone_proxies (
+                id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                proxy_type TEXT NOT NULL,
+                listen_port INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                container_name TEXT,
+                instance_path TEXT,
+                runtime TEXT,
+                client_uri TEXT,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
             """
         )
     with connect() as conn:
@@ -263,6 +278,25 @@ def row_to_realm_tunnel(row: sqlite3.Row) -> dict[str, Any]:
         "instancePath": row["instance_path"],
         "clientConfig": row["client_config"],
         "runtime": runtime,
+        "createdAt": row["created_at"],
+        "meta": meta,
+    }
+
+
+def row_to_standalone_proxy(row: sqlite3.Row) -> dict[str, Any]:
+    meta = json.loads(row["meta_json"] or "{}")
+    runtime = row["runtime"] if "runtime" in row.keys() and row["runtime"] else meta.get("runtime")
+    return {
+        "id": row["id"],
+        "serverId": row["server_id"],
+        "name": row["name"],
+        "proxyType": row["proxy_type"],
+        "listenPort": row["listen_port"],
+        "status": row["status"],
+        "containerName": row["container_name"],
+        "instancePath": row["instance_path"],
+        "runtime": runtime,
+        "clientUri": row["client_uri"],
         "createdAt": row["created_at"],
         "meta": meta,
     }

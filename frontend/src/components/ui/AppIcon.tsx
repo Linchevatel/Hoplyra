@@ -33,10 +33,11 @@ import censorClean from '@/assets/icons/censor-clean.png'
 import censorBlocked from '@/assets/icons/censor-blocked.png'
 import censorRoute from '@/assets/icons/censor-route.png'
 import realms from '@/assets/icons/realms.png'
+import noProxies from '@/assets/icons/no-proxies.png'
 import { cn } from '@/lib/utils'
 
 // Legacy names retained for compatibility; new UI uses the unique artwork below.
-const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, realms, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs, 'two-factor': twoFactor, backup, password: passwordIcon, 'censor-probe': censorProbe, 'censor-clean': censorClean, 'censor-blocked': censorBlocked, 'censor-route': censorRoute }
+const icons = { link, dashboard, servers, add, settings2, activity2, latency2, bandwidth2, security2, deploy2, global2, link2, server, lock, settings, activity, latency, bandwidth, security, 'add-server': addServer, deploy, global, socks, multihop, realms, 'no-servers': noServers, 'no-active-vpn': noActiveVpn, 'no-configs': noConfigs, 'no-proxies': noProxies, 'two-factor': twoFactor, backup, password: passwordIcon, 'censor-probe': censorProbe, 'censor-clean': censorClean, 'censor-blocked': censorBlocked, 'censor-route': censorRoute }
 
 export type AppIconName = keyof typeof icons
 

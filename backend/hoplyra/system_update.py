@@ -23,7 +23,7 @@ from typing import Any
 
 log = logging.getLogger("hoplyra.system_update")
 
-_CURRENT_VERSION = "v1.8.0"
+_CURRENT_VERSION = "v1.9.5"
 _GITHUB_REPO = "Linchevatel/Hoplyra"
 _CACHE_TTL_SECONDS = 900  # 15 minutes cache for GitHub releases
 
